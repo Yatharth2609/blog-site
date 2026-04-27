@@ -1,0 +1,134 @@
+---
+title: "LangGraph Observability Stack: Tracing Production AI Agents"
+date: "2025-03-15"
+summary: "Building a full observability stack for LangGraph agents in production — tracing every node execution, tracking token budgets, and surfacing anomalies in real time."
+tldr: "I instrumented our LangGraph agents with OpenTelemetry spans at the node level and built a Grafana dashboard that surfaces token budget violations, slow nodes, and routing anomalies within seconds of occurrence."
+tags: ["LangGraph", "Observability", "OpenTelemetry", "GCP"]
+type: "Engineering"
+---
+
+Production LangGraph agents are black boxes without deliberate instrumentation. You need visibility into which nodes run, how long they take, and where token budgets are violated.
+
+## Why Standard Logging Isn't Enough
+
+Log lines like `"Agent invoked tool: get_order_status"` tell you *what* happened but not *why it took 4 seconds* or *why the supervisor routed to the wrong worker*. You need structured, correlated traces.
+
+The three questions we needed to answer at a glance:
+
+1. Which node is the latency bottleneck right now?
+2. Are we burning through token budgets before reaching the final node?
+3. Is the supervisor routing more aggressively than it should?
+
+Standard Python logging can't answer these without significant correlation work.
+
+## OpenTelemetry Node Instrumentation
+
+The core pattern is wrapping each LangGraph node in an OTEL span:
+
+```python
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.exporter.cloud_trace import CloudTraceSpanExporter
+from functools import wraps
+
+tracer = trace.get_tracer("langgraph.agent")
+
+def traced_node(node_name: str):
+    """Decorator to wrap a LangGraph node with an OTEL span."""
+    def decorator(fn):
+        @wraps(fn)
+        async def wrapper(state: dict) -> dict:
+            with tracer.start_as_current_span(f"node.{node_name}") as span:
+                span.set_attribute("node.name", node_name)
+                span.set_attribute("input.message_count", len(state.get("messages", [])))
+                
+                result = await fn(state)
+                
+                # Capture token usage from LLM response if present
+                if usage := result.get("_usage"):
+                    span.set_attribute("tokens.prompt", usage.prompt_tokens)
+                    span.set_attribute("tokens.completion", usage.completion_tokens)
+                    span.set_attribute("tokens.total", usage.total_tokens)
+                
+                span.set_attribute("next.node", result.get("_next", "END"))
+                return result
+        return wrapper
+    return decorator
+```
+
+Apply to every node:
+
+```python
+@traced_node("supervisor")
+async def supervisor_node(state: SupervisorState) -> dict:
+    task = classify_task(state["messages"])
+    return {"task_type": task, "_next": task}
+
+@traced_node("order_lookup")
+async def order_lookup_node(state: SupervisorState) -> dict:
+    result = await get_order(state["order_id"])
+    return {"worker_result": result, "_next": "END"}
+```
+
+## Exporting to Cloud Trace
+
+```python
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+provider = TracerProvider()
+provider.add_span_processor(
+    BatchSpanProcessor(
+        CloudTraceSpanExporter(project_id="my-gcp-project")
+    )
+)
+trace.set_tracer_provider(provider)
+```
+
+Cloud Trace gives you the trace waterfall for free. But you need BigQuery for aggregations.
+
+## BigQuery Sink for Aggregations
+
+Cloud Trace → BigQuery export via a Log Sink:
+
+```bash
+gcloud logging sinks create agent-traces-sink \
+  bigquery.googleapis.com/projects/my-project/datasets/agent_traces \
+  --log-filter='resource.type="cloud_run_revision" 
+    AND jsonPayload.instrumentation_source="langgraph"'
+```
+
+Once in BigQuery, you can query node-level P95 latency:
+
+```sql
+SELECT
+  JSON_EXTRACT_SCALAR(jsonPayload, '$.node_name') AS node,
+  APPROX_QUANTILES(
+    CAST(JSON_EXTRACT_SCALAR(jsonPayload, '$.duration_ms') AS FLOAT64),
+    100
+  )[OFFSET(95)] AS p95_ms,
+  COUNT(*) AS invocations
+FROM `my-project.agent_traces.run_googleapis_com_requests`
+WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 HOUR)
+GROUP BY node
+ORDER BY p95_ms DESC
+```
+
+## Grafana Dashboard
+
+Three panels tell the whole story:
+
+<Callout type="note">
+The Grafana dashboard JSON is available in the [repo](https://github.com/yatharthmishra). Import it into any Grafana instance connected to your BigQuery data source.
+</Callout>
+
+**Panel 1: Node Latency Heatmap** — latency buckets per node over time. Spikes are immediately visible.
+
+**Panel 2: Token Budget Burn Rate** — cumulative tokens consumed per trace, overlaid with the budget limit. When the line approaches the ceiling early, the trace is likely going to fail or truncate.
+
+**Panel 3: Supervisor Routing Distribution** — pie chart of which worker gets called how often. A sudden shift (e.g., `general_agent` goes from 20% to 60%) usually means a prompt injection or an upstream data quality issue.
+
+## The Anomaly That Prompted All This
+
+A prompt injection attempt in staging routed 100% of queries to `general_agent` for 4 minutes before we noticed. Token costs spiked 5x. With the dashboard, we would have caught it in 30 seconds.
+
+That was enough motivation to build this properly.

@@ -1,0 +1,120 @@
+---
+title: "Cutting Agent Latency by 85% with the Multi-Agent Supervisor Pattern"
+date: "2025-04-20"
+summary: "How I re-architected a monolithic LangGraph agent into a supervisor-worker pattern on GCP Cloud Run and cut end-to-end latency from 12s to 1.8s."
+tldr: "I split a monolithic LangGraph agent into specialized workers controlled by a lightweight supervisor, deploying each on Cloud Run with sub-100ms cold starts. This cut latency from 12s to 1.8s through intelligent task routing and parallel execution."
+tags: ["LangGraph", "GCP", "Agents", "Performance"]
+type: "Engineering"
+featured: true
+---
+
+The monolithic agent was a single LangGraph state machine that handled routing, tool calling, summarization, and response formatting — all in one graph. Every request paid the full latency tax, even simple ones.
+
+## The Problem with Monolithic Agents
+
+When a user asks *"What's the status of order #4892?"*, a monolithic agent still loads the full system prompt, initializes all tool bindings, and runs through the same graph nodes as if processing a complex multi-step research query.
+
+Our baseline numbers before the refactor:
+
+- **P50 latency**: 12.1 seconds
+- **P95 latency**: 22.4 seconds  
+- **Cold start**: 800ms
+- **Token usage per request**: ~3,200 tokens
+
+Every request was expensive — in time and in cost.
+
+## The Supervisor Pattern
+
+The supervisor pattern introduces a lightweight orchestrator that classifies the incoming task and dispatches it to a specialized worker. Each worker is a focused LangGraph subgraph deployed on its own Cloud Run service.
+
+```python
+from langgraph.graph import StateGraph, Command
+from typing import Literal
+
+class SupervisorState(TypedDict):
+    messages: list[BaseMessage]
+    task_type: str
+    worker_result: str | None
+
+def classify_task(messages: list[BaseMessage]) -> str:
+    """Lightweight classification — no LLM needed for simple patterns."""
+    last = messages[-1].content.lower()
+    if any(kw in last for kw in ["status", "order", "track"]):
+        return "order_lookup"
+    if any(kw in last for kw in ["return", "refund", "cancel"]):
+        return "returns_agent"
+    return "general_agent"
+
+def supervisor_node(state: SupervisorState) -> Command[Literal["order_lookup", "returns_agent", "general_agent"]]:
+    task = classify_task(state["messages"])
+    return Command(goto=task, update={"task_type": task})
+```
+
+The supervisor itself has no LLM call — it's pure pattern matching for 80% of queries. The LLM only activates for the `general_agent` fallback.
+
+## Worker Architecture on Cloud Run
+
+Each worker is an independent Cloud Run service:
+
+| Worker | Triggers | Min Instances | Avg Latency |
+|--------|----------|---------------|-------------|
+| `order-lookup` | Status/tracking queries | 1 | 340ms |
+| `returns-agent` | Return/refund/cancel | 1 | 480ms |
+| `general-agent` | Everything else | 1 | 1.2s |
+
+```python
+# Each worker only sees relevant context — not the full system prompt
+ORDER_LOOKUP_SYSTEM = """You are a precise order lookup assistant.
+You have access to: get_order_status, get_tracking_info.
+Return ONLY the requested information. Do not suggest alternatives."""
+```
+
+Smaller context = fewer tokens = faster inference.
+
+## Cloud Run Configuration
+
+The key settings that made cold starts tolerable:
+
+```yaml
+# cloud-run-service.yaml
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/maxScale: "10"
+        run.googleapis.com/startup-cpu-boost: "true"
+    spec:
+      containerConcurrency: 80
+      timeoutSeconds: 30
+      containers:
+        - image: gcr.io/project/order-lookup:latest
+          resources:
+            limits:
+              cpu: "2"
+              memory: 1Gi
+```
+
+`containerConcurrency: 80` is the critical setting. LLM calls are IO-bound — the container isn't CPU-blocked while waiting for the model response. This lets one instance handle 80 concurrent requests without spawning new instances.
+
+<Callout type="info">
+`startup-cpu-boost` gives the container extra CPU during startup only, reducing cold start from ~800ms to ~85ms on our FastAPI workers. It costs nothing after the startup window.
+</Callout>
+
+## Results
+
+After the refactor:
+
+- **P50 latency**: 1.8 seconds (↓ 85%)
+- **P95 latency**: 3.2 seconds (↓ 86%)
+- **Cold start**: 85ms (↓ 89%)
+- **Token usage per request**: ~1,100 tokens (↓ 66%)
+- **Monthly infrastructure cost**: ↓ 42%
+
+The key insight is that most tasks don't need the full agent. A routing classifier adds ~50ms but saves seconds on simple queries.
+
+## What I'd Do Differently
+
+The one thing I underestimated was **worker state sync**. When a user's query spans multiple turns, the supervisor needs to maintain context about which worker handled previous turns. This required adding a lightweight Redis session store — which added ~15ms but prevented the supervisor from re-classifying mid-conversation.
+
+The pattern scales. We've since added two more specialized workers and the architecture hasn't changed.

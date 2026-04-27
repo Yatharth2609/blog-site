@@ -1,0 +1,201 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── Design System Tokens ─────────────────────────────────────────────────── */
+:root {
+  --bg: #0A0A0A;
+  --surface: #111111;
+  --border: #1F1F1F;
+  --text-primary: #FAFAFA;
+  --text-muted: #71717A;
+  --accent: #00FF87;
+  --accent-dim: rgba(0, 255, 135, 0.08);
+}
+
+/* ─── Base Reset ────────────────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* scroll-behavior handled via data-scroll-behavior="smooth" on <html> in layout.tsx */
+
+body {
+  background-color: var(--bg);
+  color: var(--text-primary);
+  font-family: var(--font-geist-mono), 'Courier New', monospace;
+  font-size: 14px;
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-height: 100vh;
+}
+
+/* ─── Scan Line Overlay ─────────────────────────────────────────────────────── */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.03) 2px,
+    rgba(0, 0, 0, 0.03) 4px
+  );
+}
+
+/* ─── Typography ────────────────────────────────────────────────────────────── */
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-geist-mono), 'Courier New', monospace;
+  font-weight: 500;
+  color: var(--text-primary);
+  line-height: 1.3;
+}
+
+h1 { font-size: clamp(24px, 4vw, 32px); }
+h2 { font-size: clamp(18px, 3vw, 24px); }
+h3 { font-size: 18px; }
+
+p {
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--text-primary);
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+  transition: opacity 0.15s ease;
+}
+
+a:hover {
+  opacity: 0.8;
+}
+
+/* ─── Selection ─────────────────────────────────────────────────────────────── */
+::selection {
+  background: rgba(0, 255, 135, 0.2);
+  color: var(--text-primary);
+}
+
+/* ─── Scrollbar ─────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* ─── Animations ────────────────────────────────────────────────────────────── */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideInLeft {
+  from { width: 0; }
+  to   { width: 100%; }
+}
+
+/* ─── Utilities ─────────────────────────────────────────────────────────────── */
+
+/* Tag pill */
+.tag-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-family: var(--font-geist-mono), monospace;
+  font-weight: 400;
+  color: var(--accent);
+  background: var(--accent-dim);
+  border: 1px solid rgba(0, 255, 135, 0.2);
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+/* Post title hover underline — slide from left */
+.post-title-link {
+  position: relative;
+  display: inline;
+  color: var(--text-primary);
+  text-decoration: none;
+}
+
+.post-title-link::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  width: 0;
+  height: 1px;
+  background: var(--accent);
+  transition: width 0.25s ease;
+}
+
+.post-title-link:hover::after {
+  width: 100%;
+}
+
+/* Feed row hover left border */
+.feed-row {
+  position: relative;
+  transition: background 0.15s ease;
+  border-left: 2px solid transparent;
+}
+
+.feed-row:hover {
+  border-left-color: var(--accent);
+  background: rgba(0, 255, 135, 0.02);
+}
+
+/* Dot grid for hero section */
+.dot-grid-bg {
+  background-image: radial-gradient(circle, var(--border) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* Fade in up utility */
+.animate-fade-in-up {
+  animation: fadeInUp 0.4s ease forwards;
+}
+
+/* Focus visible reset */
+:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Code inline */
+code:not(pre code) {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 13px;
+  color: var(--accent);
+  background: var(--surface);
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+}

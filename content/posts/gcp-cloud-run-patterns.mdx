@@ -1,0 +1,128 @@
+---
+title: "GCP Cloud Run Patterns for AI Workloads"
+date: "2025-02-28"
+summary: "A practical guide to deploying AI inference workloads on GCP Cloud Run — covering cold start optimization, GPU instances, request concurrency, and cost modeling."
+tldr: "Cloud Run is underrated for AI workloads. With min-instances, GPU preview, and concurrency tuning, you can achieve sub-200ms cold starts and near-serverless economics for LLM inference."
+tags: ["GCP", "Cloud Run", "Infrastructure", "AI"]
+type: "Engineering"
+---
+
+Cloud Run gets dismissed for AI because people assume GPUs require Kubernetes. That assumption is two years out of date. Here's what actually works in production.
+
+## The Cold Start Myth
+
+The most common objection to Cloud Run for AI: *"Cold starts will kill your latency."*
+
+True for CPU-heavy ML inference. False for LLM API wrappers.
+
+If you're wrapping Anthropic, OpenAI, or Vertex AI, your container is a FastAPI app that:
+1. Loads a 50MB Docker image (not a 10GB model)
+2. Initializes some Python imports
+3. Opens a connection pool to the LLM API
+
+That cold start is **150–400ms**, not the 8–15 seconds people quote from model-serving benchmarks.
+
+<Callout type="warning">
+These numbers apply to **API-wrapper services** — FastAPI apps calling external LLM APIs. If you're serving local model weights (even quantized), Cloud Run's cold start characteristics are different. Use Cloud Run GPU (preview) with min-instances=1 in that case.
+</Callout>
+
+## Minimum Instances: The Only Setting That Matters
+
+For any user-facing endpoint:
+
+```yaml
+autoscaling.knative.dev/minScale: "1"
+```
+
+The math is simple. One minimum instance at `e2-standard-2` costs ~$35/month. The alternative is unpredictable cold starts on every trough period. For production workloads, this is not a discussion.
+
+Two minimum instances (one per zone) for HA:
+
+```bash
+gcloud run services update my-service \
+  --min-instances=2 \
+  --region=us-central1
+```
+
+## Request Concurrency: The Hidden Multiplier
+
+The default Cloud Run concurrency is 80. Most teams leave it here. Don't.
+
+For LLM API wrapper services, every request spends 80–95% of its time waiting on the upstream API — not executing Python. You can safely increase concurrency to 200–500:
+
+```bash
+gcloud run services update my-service \
+  --concurrency=300 \
+  --cpu=2 \
+  --memory=1Gi
+```
+
+With concurrency=300 and min-instances=2, you can absorb **600 simultaneous requests** with zero scale-out events. That's a meaningful buffer before Cloud Run starts spinning up new instances.
+
+## CPU Boost for Fast Starts
+
+```bash
+gcloud run services update my-service \
+  --cpu-boost \
+  --region=us-central1
+```
+
+This gives the container extra CPU during the startup window only. FastAPI initialization goes from ~400ms to ~85ms. After the startup window, the CPU allocation reverts to whatever you've specified.
+
+## Cost Model
+
+Here's the actual cost breakdown for a service handling 50,000 requests/day at an average of 2 seconds each:
+
+```
+Request volume:  50,000 req/day = 2,083 req/hour
+Avg duration:    2s
+Concurrency:     300
+Instances needed: ceil(2083 * 2 / 300) = 14 request-seconds / hour → < 1 instance
+
+Min instances:   2 × e2-standard-2 = $35 × 2 = $70/month
+Overage compute: ~$0 (min instances absorb all traffic)
+Total:           ~$70/month
+```
+
+Compare to a dedicated VM: `n2-standard-4` at minimum = $97/month, with no auto-scaling and more ops burden.
+
+Cloud Run wins on cost below ~200,000 requests/day.
+
+## Structured Logging Pattern
+
+Cloud Run + Cloud Logging work well together, but you need structured logs to get useful queries:
+
+```python
+import structlog
+import json
+
+log = structlog.get_logger()
+
+async def llm_call(prompt: str, model: str) -> str:
+    start = time.monotonic()
+    response = await client.messages.create(...)
+    duration_ms = (time.monotonic() - start) * 1000
+    
+    log.info("llm_call",
+        model=model,
+        prompt_tokens=response.usage.input_tokens,
+        completion_tokens=response.usage.output_tokens,
+        duration_ms=round(duration_ms, 1),
+        status="success"
+    )
+    return response.content[0].text
+```
+
+This makes token usage and latency queryable in Cloud Logging without any additional infrastructure.
+
+## What I Run in Production
+
+| Service | Min Instances | Concurrency | CPU | Memory |
+|---------|--------------|-------------|-----|--------|
+| API Gateway | 2 | 300 | 1 | 512Mi |
+| Supervisor Agent | 1 | 80 | 2 | 1Gi |
+| Order Lookup | 1 | 150 | 1 | 512Mi |
+| Returns Agent | 1 | 150 | 1 | 512Mi |
+| General Agent | 1 | 50 | 2 | 1Gi |
+
+Total monthly cost: ~$280 for a service handling 2M requests/month. That's $0.00014 per request in infrastructure.
