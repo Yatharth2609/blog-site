@@ -142,9 +142,9 @@ const STACK_GROUPS = [
 ]
 
 const LINKS = [
-  { label: 'GitHub', href: 'https://github.com/yatharthmishra', prefix: 'gh' },
-  { label: 'LinkedIn', href: 'https://linkedin.com/in/yatharthmishra', prefix: 'li' },
-  { label: 'Email', href: 'mailto:yatharth.a.mishra@gmail.com', prefix: 'em' },
+  { label: 'GitHub', href: 'https://github.com/Yatharth2609', prefix: 'gh' },
+  { label: 'LinkedIn', href: 'https://linkedin.com/in/yatharth-mishra2609', prefix: 'li' },
+  { label: 'Email', href: 'mailto:yatharth.mishra.2002@gmail.com', prefix: 'em' },
 ]
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
