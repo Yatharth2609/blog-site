@@ -65,7 +65,7 @@ export default function Navbar() {
           className="text-sm font-medium tracking-tight"
           style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-geist-mono)' }}
         >
-          blog.yatharthmishra.dev
+          YM
         </Link>
 
         {/* Desktop nav items */}

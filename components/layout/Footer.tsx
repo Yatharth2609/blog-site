@@ -11,22 +11,28 @@ interface ExternalLink {
 
 const EXTERNAL_LINKS: ExternalLink[] = [
   {
+    key: 'y',
+    label: 'My Portfolio',
+    shortcut: 'Y',
+    href: 'https://yatharthmishra.dev/',
+  },
+  {
     key: 'g',
     label: 'GitHub',
     shortcut: 'G',
-    href: 'https://github.com/yatharthmishra',
+    href: 'https://github.com/Yatharth2609',
   },
   {
     key: 'l',
     label: 'LinkedIn',
     shortcut: 'L',
-    href: 'https://linkedin.com/in/yatharthmishra',
+    href: 'https://linkedin.com/in/yatharth-mishra2609',
   },
   {
     key: 't',
     label: 'Twitter',
     shortcut: 'T',
-    href: 'https://twitter.com/yatharthmishra',
+    href: 'https://twitter.com/yatharth_m2609',
   },
 ]
 
