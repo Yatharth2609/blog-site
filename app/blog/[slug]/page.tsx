@@ -4,7 +4,10 @@ import Link from 'next/link'
 import ReadingProgress from '@/components/blog/ReadingProgress'
 import PostHeader from '@/components/blog/PostHeader'
 import AskPanel from '@/components/post/AskPanel'
+import { JsonLd } from '@/components/JsonLd'
 import { getAllPosts, getPostBySlug, getAdjacentPosts, formatDate } from '@/lib/posts'
+
+const BASE = 'https://blogs.yatharthmishra.dev'
 
 // Pre-render all post slugs at build time
 export async function generateStaticParams() {
@@ -14,7 +17,8 @@ export async function generateStaticParams() {
 // Allow on-demand rendering for slugs not in generateStaticParams
 export const dynamicParams = true
 
-// Dynamic metadata per post
+// TASK 4: Fully-enriched generateMetadata with Open Graph article fields,
+// Twitter card, canonical, authors, and keywords.
 export async function generateMetadata(
   props: PageProps<'/blog/[slug]'>
 ): Promise<Metadata> {
@@ -23,19 +27,36 @@ export async function generateMetadata(
   if (!post) return { title: 'Post not found' }
 
   return {
-    title: post.title,
+    title: `${post.title} | Yatharth Mishra`,
     description: post.summary,
+    authors: [{ name: 'Yatharth Mishra', url: 'https://yatharthmishra.dev' }],
+    keywords: post.tags,
+    // TASK 1: Canonical per-post URL (relative; resolved against metadataBase)
+    alternates: {
+      canonical: `/blog/${post.slug}`,
+    },
     openGraph: {
+      type: 'article',
       title: post.title,
       description: post.summary,
-      type: 'article',
+      // Relative URL — Next.js resolves against metadataBase in root layout
+      url: `/blog/${post.slug}`,
+      siteName: 'Yatharth Mishra',
+      locale: 'en_US',
       publishedTime: post.date,
+      // No lastModified in current schema — fall back to date
+      modifiedTime: post.date,
+      authors: ['Yatharth Mishra'],
       tags: post.tags,
+      // NOTE: og:image is automatically injected from opengraph-image.tsx —
+      // do NOT manually set `images` here when using file-based OG images.
     },
     twitter: {
       card: 'summary_large_image',
       title: post.title,
       description: post.summary,
+      creator: '@yatharth_m2609',
+      site: '@yatharth_m2609',
     },
   }
 }
@@ -59,10 +80,69 @@ export default async function PostPage(props: PageProps<'/blog/[slug]'>) {
     MDXContent = null
   }
 
+  const postUrl = `${BASE}/blog/${post.slug}`
+
   return (
     <>
       {/* Fixed reading progress bar */}
       <ReadingProgress />
+
+      {/* TASK 3c: BlogPosting schema */}
+      <JsonLd
+        data={{
+          '@context': 'https://schema.org',
+          '@type': 'BlogPosting',
+          headline: post.title,
+          description: post.summary,
+          datePublished: post.date,
+          dateModified: post.date,
+          url: postUrl,
+          image: `${postUrl}/opengraph-image`,
+          keywords: post.tags?.join(', '),
+          author: {
+            '@type': 'Person',
+            name: 'Yatharth Mishra',
+            url: 'https://yatharthmishra.dev',
+          },
+          publisher: {
+            '@type': 'Person',
+            name: 'Yatharth Mishra',
+            url: 'https://yatharthmishra.dev',
+          },
+          mainEntityOfPage: {
+            '@type': 'WebPage',
+            '@id': postUrl,
+          },
+        }}
+      />
+
+      {/* TASK 3d: BreadcrumbList schema */}
+      <JsonLd
+        data={{
+          '@context': 'https://schema.org',
+          '@type': 'BreadcrumbList',
+          itemListElement: [
+            {
+              '@type': 'ListItem',
+              position: 1,
+              name: 'Home',
+              item: BASE,
+            },
+            {
+              '@type': 'ListItem',
+              position: 2,
+              name: 'Blog',
+              item: `${BASE}/blog`,
+            },
+            {
+              '@type': 'ListItem',
+              position: 3,
+              name: post.title,
+              item: postUrl,
+            },
+          ],
+        }}
+      />
 
       <div className="max-w-5xl mx-auto px-4 sm:px-6 py-16">
         <article className="max-w-2xl mx-auto">

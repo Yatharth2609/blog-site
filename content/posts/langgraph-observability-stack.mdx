@@ -1,10 +1,14 @@
 ---
 title: "LangGraph Observability Stack: Tracing Production AI Agents"
-date: "2025-03-15"
+description: "Building a full observability stack for LangGraph agents in production — tracing every node execution, tracking token budgets, and surfacing anomalies in real time."
+date: "2026-04-26"
+lastModified: "2026-04-26"
 summary: "Building a full observability stack for LangGraph agents in production — tracing every node execution, tracking token budgets, and surfacing anomalies in real time."
 tldr: "I instrumented our LangGraph agents with OpenTelemetry spans at the node level and built a Grafana dashboard that surfaces token budget violations, slow nodes, and routing anomalies within seconds of occurrence."
 tags: ["LangGraph", "Observability", "OpenTelemetry", "GCP"]
 type: "Engineering"
+category: "Engineering"
+readingTime: 11
 ---
 
 Production LangGraph agents are black boxes without deliberate instrumentation. You need visibility into which nodes run, how long they take, and where token budgets are violated.

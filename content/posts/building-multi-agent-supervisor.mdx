@@ -1,10 +1,14 @@
 ---
 title: "Cutting Agent Latency by 85% with the Multi-Agent Supervisor Pattern"
-date: "2025-04-20"
+description: "How I re-architected a monolithic LangGraph agent into a supervisor-worker pattern on GCP Cloud Run and cut latency from 12s to 1.8s."
+date: "2026-04-18"
+lastModified: "2026-04-18"
 summary: "How I re-architected a monolithic LangGraph agent into a supervisor-worker pattern on GCP Cloud Run and cut end-to-end latency from 12s to 1.8s."
 tldr: "I split a monolithic LangGraph agent into specialized workers controlled by a lightweight supervisor, deploying each on Cloud Run with sub-100ms cold starts. This cut latency from 12s to 1.8s through intelligent task routing and parallel execution."
 tags: ["LangGraph", "GCP", "Agents", "Performance"]
 type: "Engineering"
+category: "Engineering"
+readingTime: 8
 featured: true
 ---
 

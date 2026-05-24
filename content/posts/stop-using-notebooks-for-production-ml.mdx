@@ -1,10 +1,14 @@
 ---
 title: "Why I Stopped Using Notebooks for Production ML"
-date: "2025-01-20"
+description: "Notebooks are great for exploration but catastrophic for production. Here is the migration path from Jupyter notebooks to a FastAPI service that works at scale."
+date: "2026-05-16"
+lastModified: "2026-05-16"
 summary: "Notebooks are great for exploration but catastrophic for production. Here is the migration path I use to move from experimental Jupyter notebooks to a FastAPI service that actually works at scale."
 tldr: "Jupyter notebooks accumulate hidden state, non-linear execution, and zero dependency discipline — all of which become compounding liabilities the moment you try to serve a model in production. I now use a strict notebook → script → service pipeline with clear phase gates."
 tags: ["Python", "FastAPI", "MLOps", "Engineering"]
 type: "Opinion"
+category: "Engineering"
+readingTime: 6
 ---
 
 Let me paint a picture you've almost certainly lived through.

@@ -1,10 +1,14 @@
 ---
 title: "Building a RAG Pipeline That Actually Works in Production"
-date: "2024-12-10"
+description: "Most RAG tutorials stop at the happy path. This is about the failure modes — chunking strategies, embedding drift, retrieval quality degradation — and how to fix them."
+date: "2026-05-16"
+lastModified: "2026-05-16"
 summary: "Most RAG tutorials stop at the happy path. This is about the failure modes — chunking strategies, embedding drift, retrieval quality degradation — and how to handle them systematically."
 tldr: "I built a RAG pipeline over a customer support knowledge base using Gemini Embeddings and Vertex AI Vector Search. The system failed in two spectacular ways before it worked: catastrophic chunking that destroyed answer context, and a retrieval recall collapse where top-k always returned the same stale documents. Here's the systematic fix for both."
 tags: ["RAG", "LangGraph", "Production", "AI"]
 type: "Case Study"
+category: "Engineering"
+readingTime: 14
 ---
 
 Every RAG tutorial I read before building this system covered the same happy path: chunk your documents, embed them, store them in a vector database, retrieve top-k, stuff into context, call the LLM. Simple. Clean. Completely disconnected from what happens when you deploy it to real users asking real questions about a real product.
