@@ -21,8 +21,8 @@ config({ path: join(process.cwd(), '.env.local') })
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
 
 import { Resend } from 'resend'
-import { readFileSync, existsSync, readdirSync } from 'fs'
-import matter from 'gray-matter'
+import { readFileSync, existsSync } from 'fs'
+import { getAllPosts, type Post } from '../lib/posts'
 
 // ─── Thin Resend wrapper using Node built-in fetch ────────────────────────────
 async function sendEmail(apiKey: string, payload: {
@@ -48,37 +48,14 @@ function loadSubscribers(): string[] {
   catch { return [] }
 }
 
-// ─── Find the latest post ─────────────────────────────────────────────────────
-
-interface PostFrontmatter {
-  title: string
-  date: string
-  summary: string
-  tags?: string[]
-  slug?: string
-}
-
-function getLatestPost(): PostFrontmatter & { slug: string } | null {
-  const postsDir = join(process.cwd(), 'content', 'posts')
-  if (!existsSync(postsDir)) return null
-
-  const files = readdirSync(postsDir).filter(f => f.endsWith('.mdx'))
-  if (files.length === 0) return null
-
-  const posts = files.map(file => {
-    const raw = readFileSync(join(postsDir, file), 'utf-8')
-    const { data } = matter(raw)
-    return { ...(data as PostFrontmatter), slug: (data as PostFrontmatter).slug ?? file.replace(/\.mdx$/, '') }
-  })
-
-  // Sort by date desc, take first
-  posts.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-  return posts[0]
+function getLatestPost(): Post | null {
+  const posts = getAllPosts() // already sorted by date desc from posts.ts
+  return posts[0] ?? null
 }
 
 // ─── Email template ───────────────────────────────────────────────────────────
 
-function buildEmail(post: PostFrontmatter & { slug: string }): string {
+function buildEmail(post: Post): string {
   const postUrl = `https://blog.yatharthmishra.dev/blog/${post.slug}`
   const date = new Date(post.date).toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' })
   const tags = (post.tags ?? []).map(t => `<span style="display:inline-block;padding:2px 8px;font-size:11px;color:#00ff87;background:rgba(0,255,135,0.08);border:1px solid rgba(0,255,135,0.2);border-radius:3px;margin:0 4px 4px 0;">${t}</span>`).join('')

@@ -1,0 +1,346 @@
+---
+title: "Building a RAG Pipeline That Actually Works in Production"
+date: "2024-12-10"
+summary: "Most RAG tutorials stop at the happy path. This is about the failure modes — chunking strategies, embedding drift, retrieval quality degradation — and how to handle them systematically."
+tldr: "I built a RAG pipeline over a customer support knowledge base using Gemini Embeddings and Vertex AI Vector Search. The system failed in two spectacular ways before it worked: catastrophic chunking that destroyed answer context, and a retrieval recall collapse where top-k always returned the same stale documents. Here's the systematic fix for both."
+tags: ["RAG", "LangGraph", "Production", "AI"]
+type: "Case Study"
+---
+
+Every RAG tutorial I read before building this system covered the same happy path: chunk your documents, embed them, store them in a vector database, retrieve top-k, stuff into context, call the LLM. Simple. Clean. Completely disconnected from what happens when you deploy it to real users asking real questions about a real product.
+
+I spent three months building a RAG system over a customer support knowledge base — thousands of articles, FAQs, policy documents, and troubleshooting guides. We used Gemini Embeddings and Vertex AI Vector Search. The system went through two complete architectural overhauls before it worked reliably in production.
+
+This post is about the two failures that nearly killed the project, and the systematic approach that finally made it work.
+
+## The System We Were Building
+
+The setup: a customer support knowledge base with ~4,200 documents — support articles, product FAQs, pricing policy docs, and step-by-step troubleshooting guides. The goal was an AI assistant that could answer support queries by retrieving relevant KB articles and synthesizing a response.
+
+The tech stack:
+
+- **Embedding model**: `gemini-embedding-001` via Vertex AI
+- **Vector store**: Vertex AI Vector Search (Matching Engine)
+- **Orchestration**: LangGraph with a custom retrieval graph
+- **LLM for synthesis**: Gemini 1.5 Flash
+- **Serving**: FastAPI on Cloud Run
+
+On paper, a standard RAG setup. In practice, the failure modes were humbling.
+
+## Failure Mode 1: Chunking That Destroyed Context
+
+Our first chunking strategy was the obvious one: split documents every 512 tokens with a 50-token overlap. This is what every tutorial recommends. It produced 23,000 chunks from our 4,200 documents.
+
+It also completely destroyed retrieval quality for anything that wasn't a single-sentence fact.
+
+Here's what was actually happening. Our troubleshooting guides looked like this:
+
+```
+Article: "Why is my invoice showing the wrong amount?"
+
+If your invoice shows an incorrect amount, this is usually caused by one
+of three issues:
+
+1. A proration calculation from a mid-cycle plan change
+2. A discount code that wasn't applied at checkout  
+3. A legacy pricing tier that wasn't migrated correctly
+
+For issue (1): Navigate to Billing > Invoice History and look for a 
+"Proration Credit" line item. If it's missing, contact support with 
+your account ID and the affected invoice number.
+
+For issue (2): Check your account settings under Promotions. If the 
+discount shows as "Applied" but isn't reflected on the invoice...
+```
+
+When we chunked this at 512 tokens, chunk boundaries fell in the middle of numbered lists. A chunk would end with "For issue (2): Check your account settings under Promotions" and the resolution was in the next chunk, with no overlap sufficient to carry the context.
+
+The retrieval system would find the chunk describing *the problem* — which had high embedding similarity to the query "my invoice amount is wrong" — but the resolution was in a different chunk that the query didn't score highly enough to retrieve.
+
+Users got answers that correctly identified their problem and then stopped before explaining what to do about it. The LLM would then hallucinate the resolution from its training data, which was often wrong for our specific system.
+
+<Callout type="warning">
+The symptom of bad chunking isn't "retrieval fails." It's "retrieval succeeds, but the retrieved chunks don't contain enough information to answer the question." The LLM then fills the gap with hallucination. This is much harder to detect than an outright retrieval failure.
+</Callout>
+
+### The Fix: Semantic Chunking with Structural Awareness
+
+We replaced fixed-size chunking with a two-layer approach:
+
+**Layer 1: Structure-aware splitting.** Before anything touches an embedding model, split documents at their natural structural boundaries — headings, numbered list items, and paragraph breaks. Never split in the middle of a numbered list.
+
+```python
+import re
+from dataclasses import dataclass
+
+@dataclass
+class Chunk:
+    text: str
+    doc_id: str
+    section_title: str
+    chunk_index: int
+    parent_section: str | None = None
+
+def structure_aware_split(doc: str, doc_id: str) -> list[Chunk]:
+    """
+    Split at h2/h3 boundaries first, then by paragraph.
+    Never split inside a numbered/bulleted list block.
+    """
+    chunks = []
+    current_section = ""
+    current_title = "Introduction"
+    buffer = []
+    in_list = False
+
+    for line in doc.split('\n'):
+        # Detect section boundaries
+        if re.match(r'^#{1,3}\s+', line):
+            # Flush buffer before new section
+            if buffer:
+                chunks.append(Chunk(
+                    text='\n'.join(buffer).strip(),
+                    doc_id=doc_id,
+                    section_title=current_title,
+                    chunk_index=len(chunks)
+                ))
+                buffer = []
+            current_title = re.sub(r'^#{1,3}\s+', '', line)
+            in_list = False
+            continue
+
+        # Track list context — don't split here
+        if re.match(r'^\s*[\d]+\.|\s*[-*]\s', line):
+            in_list = True
+        elif line.strip() == '':
+            in_list = False
+
+        buffer.append(line)
+
+        # Split on paragraph breaks, but not inside lists
+        if line.strip() == '' and not in_list and len('\n'.join(buffer)) > 400:
+            chunks.append(Chunk(
+                text='\n'.join(buffer).strip(),
+                doc_id=doc_id,
+                section_title=current_title,
+                chunk_index=len(chunks)
+            ))
+            buffer = []
+
+    # Flush remaining
+    if buffer:
+        chunks.append(Chunk(
+            text='\n'.join(buffer).strip(),
+            doc_id=doc_id,
+            section_title=current_title,
+            chunk_index=len(chunks)
+        ))
+
+    return [c for c in chunks if len(c.text) > 50]
+```
+
+**Layer 2: Contextual chunk enrichment.** Before embedding each chunk, prepend its document title and section heading. This dramatically improves embedding quality because the model now understands *what the chunk is about*, not just its isolated text.
+
+```python
+def enrich_chunk_for_embedding(chunk: Chunk, doc_title: str) -> str:
+    """
+    Prepend structural context before embedding.
+    The LLM retrieval context gets the raw chunk — embedding gets the enriched version.
+    """
+    return f"Document: {doc_title}\nSection: {chunk.section_title}\n\n{chunk.text}"
+```
+
+After this change, we went from 23,000 chunks to 31,000 (the list-preservation produced more, smaller chunks), but retrieval accuracy on our evaluation set jumped from 61% to 84% at top-3.
+
+## Failure Mode 2: Retrieval Recall Collapse
+
+Three weeks after launch, support team feedback started coming in: the assistant kept returning the same handful of articles regardless of what was asked. A query about "how to cancel a subscription" returned the same three billing documents as a query about "how to update my payment method" and a query about "why was I charged twice."
+
+In our Vertex AI Vector Search logs, these three documents appeared in 67% of all retrievals. The embedding similarity scores for them hovered around 0.78–0.82 for almost any billing-related query.
+
+This is retrieval recall collapse. A small number of documents become "super-documents" — they cover enough ground topically that their embeddings sit near the centroid of an entire query cluster. Every billing query got magnetically pulled toward them, drowning out the documents that actually answered the specific question.
+
+The super-documents in our case were the "Billing Overview" article (a comprehensive guide that mentioned every billing concept) and two of our most-viewed FAQ compilations. They weren't bad documents — they were too good. Too comprehensive. Their embeddings captured the whole topic space, not a specific facet.
+
+### The Fix: Maximum Marginal Relevance + Metadata Filtering
+
+Two changes solved this:
+
+**Change 1: Maximum Marginal Relevance (MMR) retrieval.** Instead of taking the top-k by cosine similarity, MMR selects documents that are both relevant to the query *and* diverse from each other. It penalizes redundancy in the retrieved set.
+
+```python
+from vertexai.language_models import TextEmbeddingModel
+import numpy as np
+
+def mmr_retrieval(
+    query_embedding: list[float],
+    candidate_docs: list[tuple[str, list[float]]],  # (doc_id, embedding)
+    top_k: int = 6,
+    lambda_param: float = 0.6,  # trade-off: 0=max diversity, 1=max relevance
+) -> list[str]:
+    """
+    Maximum Marginal Relevance selection.
+    lambda_param controls the relevance/diversity balance.
+    """
+    if not candidate_docs:
+        return []
+
+    q = np.array(query_embedding)
+    selected = []
+    remaining = list(candidate_docs)
+
+    while len(selected) < top_k and remaining:
+        mmr_scores = []
+        for doc_id, doc_emb in remaining:
+            d = np.array(doc_emb)
+            relevance = cosine_sim(q, d)
+            
+            if not selected:
+                redundancy = 0.0
+            else:
+                # Penalty: max similarity to already-selected docs
+                redundancy = max(
+                    cosine_sim(d, np.array(s_emb))
+                    for _, s_emb in selected
+                )
+            
+            mmr = lambda_param * relevance - (1 - lambda_param) * redundancy
+            mmr_scores.append((doc_id, doc_emb, mmr))
+
+        best = max(mmr_scores, key=lambda x: x[2])
+        selected.append((best[0], best[1]))
+        remaining = [(d, e) for d, e, _ in mmr_scores if d != best[0]]
+
+    return [doc_id for doc_id, _ in selected]
+
+
+def cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-10))
+```
+
+**Change 2: Intent-based metadata filtering.** We added a lightweight query classifier that detects the intent category (billing, account, product, technical) and pre-filters the vector search to that category before scoring. This prevents billing-domain super-documents from being candidates for non-billing queries.
+
+```python
+from google.cloud import aiplatform
+from enum import Enum
+
+class QueryIntent(str, Enum):
+    BILLING = "billing"
+    ACCOUNT = "account"
+    PRODUCT = "product"
+    TECHNICAL = "technical"
+    GENERAL = "general"
+
+INTENT_KEYWORDS = {
+    QueryIntent.BILLING: ["invoice", "charge", "payment", "refund", "subscription", "billing", "price"],
+    QueryIntent.ACCOUNT: ["login", "password", "email", "profile", "account", "settings"],
+    QueryIntent.TECHNICAL: ["error", "bug", "crash", "not working", "broken", "fail", "timeout"],
+    QueryIntent.PRODUCT: ["feature", "how to", "how do", "can I", "does it support"],
+}
+
+def classify_intent(query: str) -> QueryIntent:
+    q = query.lower()
+    scores = {
+        intent: sum(1 for kw in keywords if kw in q)
+        for intent, keywords in INTENT_KEYWORDS.items()
+    }
+    best_intent = max(scores, key=scores.get)
+    return best_intent if scores[best_intent] > 0 else QueryIntent.GENERAL
+
+def retrieve_with_intent(
+    query: str,
+    query_embedding: list[float],
+    index_endpoint: aiplatform.MatchingEngineIndexEndpoint,
+    top_k: int = 20,  # over-fetch for MMR
+) -> list[str]:
+    intent = classify_intent(query)
+    
+    # Vertex AI Vector Search supports metadata-based pre-filtering
+    filter_expr = (
+        f'intent = "{intent.value}"'
+        if intent != QueryIntent.GENERAL
+        else None
+    )
+    
+    response = index_endpoint.find_neighbors(
+        deployed_index_id="kb_index",
+        queries=[query_embedding],
+        num_neighbors=top_k,
+        filter=filter_expr,
+    )
+    
+    # Apply MMR over the over-fetched candidates — wired into the LangGraph retrieval node
+    candidate_embeddings = [(match.id, match.feature_vector) for match in response[0]]
+    return mmr_retrieval(query_embedding, candidate_embeddings, top_k=6)
+```
+
+After deploying both changes:
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Retrieval accuracy @ top-3 | 61% | 84% |
+| Super-document domination rate | 67% | 11% |
+| User satisfaction (CSAT) | 3.1/5 | 4.2/5 |
+| Hallucination rate (sampled eval) | 23% | 8% |
+
+## The Evaluation Infrastructure You Can't Skip
+
+The two failure modes above were hard to catch because we didn't have the right evaluation setup from the start. Retrieval accuracy is invisible without a ground-truth evaluation set.
+
+After the second overhaul, we built this before touching anything else:
+
+```python
+# eval/retrieval_eval.py
+
+@dataclass
+class EvalCase:
+    query: str
+    expected_doc_ids: list[str]   # ground truth: which docs should be retrieved
+    intent: QueryIntent
+
+def recall_at_k(retrieved: list[str], expected: list[str], k: int) -> float:
+    retrieved_k = set(retrieved[:k])
+    expected_set = set(expected)
+    return len(retrieved_k & expected_set) / len(expected_set)
+
+def run_eval(pipeline: RAGPipeline, cases: list[EvalCase]) -> dict:
+    results = {"recall@3": [], "recall@6": [], "by_intent": {}}
+    
+    for case in cases:
+        retrieved = pipeline.retrieve(case.query)
+        r3 = recall_at_k(retrieved, case.expected_doc_ids, 3)
+        r6 = recall_at_k(retrieved, case.expected_doc_ids, 6)
+        results["recall@3"].append(r3)
+        results["recall@6"].append(r6)
+        
+        intent = case.intent.value
+        results["by_intent"].setdefault(intent, []).append(r3)
+    
+    return {
+        "recall@3": sum(results["recall@3"]) / len(results["recall@3"]),
+        "recall@6": sum(results["recall@6"]) / len(results["recall@6"]),
+        "by_intent": {
+            intent: sum(scores) / len(scores)
+            for intent, scores in results["by_intent"].items()
+        }
+    }
+```
+
+We maintain 200 hand-labeled eval cases. Every pipeline change runs against this set before deployment. The per-intent breakdown was critical — our initial fix improved billing retrieval dramatically but regressed technical queries. We wouldn't have known without the stratified eval.
+
+<Callout type="info">
+Build your eval set *before* you start optimizing. Once you've seen the system fail, your intuitions bias toward fixing the cases you've observed. Cold ground truth is more honest.
+</Callout>
+
+## What I'd Do Differently From Day One
+
+1. **Start with structure-aware chunking.** Never use fixed-size chunking on structured documents. It's not the safe default — it's the dangerous one.
+
+2. **Build the eval set before you build the pipeline.** Fifty eval cases is enough to start. Two hundred is enough to ship.
+
+3. **Monitor the retrieval distribution.** Log which documents appear in retrievals and alert when any single document exceeds 15% of all retrievals. That's your early warning for super-document problems.
+
+4. **Embed the question, not just the document.** For FAQ-style content, embed both the question and the answer separately. A user query is semantically much closer to the FAQ question phrasing than to the answer text.
+
+5. **Track hallucinations explicitly.** We used a secondary LLM call to check if each generated answer was supported by the retrieved chunks. The rate was a leading indicator for retrieval quality issues — it degraded before CSAT did.
+
+The happy path is not the production path. The production path has documents that weren't written to be chunked, queries that don't match document phrasing, and retrieval distributions that drift toward whatever's popular. Plan for that from the start.

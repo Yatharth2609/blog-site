@@ -1,0 +1,145 @@
+---
+title: "From Intern to AI Engineer: What I Actually Learned"
+date: "2024-11-05"
+summary: "Two years of building production AI systems taught me more about software engineering than about AI. Here is what I would tell myself at the start."
+tldr: "The skills that made me effective as an AI engineer weren't the ML theory I expected to need — they were debugging discipline, clear technical writing, knowing when not to use AI, and understanding that systems thinking matters more than model knowledge."
+tags: ["Career", "AI", "Engineering"]
+type: "Career"
+---
+
+When I started as an intern on an AI team, I assumed the gap between me and the senior engineers was mostly knowledge about models and frameworks. They knew more transformers, more fine-tuning techniques, more about attention mechanisms and agentic systems than I did. If I closed that gap, I'd close the performance gap.
+
+I was wrong about what the gap actually was.
+
+Few months in and POCs later, the things that made me measurably more effective as an engineer had almost nothing to do with knowing more about AI. They were almost entirely about software engineering discipline, communication, and judgment. The AI knowledge mattered, but it was table stakes — not the differentiator.
+
+Here's what I actually learned, and what I wish I'd known on day one.
+
+## The Real Work Is Debugging, Not Building
+
+My mental model of AI engineering before I started: build cool things, see them work, ship them.
+
+My mental model now: spend 60% of your time trying to understand why something that should work doesn't.
+
+Production AI systems fail in ways that are uniquely opaque. A broken API returns a 500. A broken LLM pipeline returns a confident, fluent, completely wrong answer. The system tells you it succeeded. You have to prove it didn't.
+
+The senior engineers I learned the most from shared one trait: they were systematic debuggers. When something was wrong, they didn't guess — they narrowed the problem space. They'd bisect the pipeline: *Is the retrieval returning the right documents? Is the prompt constructed correctly? Is the LLM parsing the output format correctly?* They'd isolate each layer until the failure was contained.
+
+I learned to structure my debugging the same way I'd structure a unit test: one variable at a time. If the system is producing bad outputs, you need to know if it's the data, the retrieval, the prompt, or the model — and you need to know it *before* you touch anything.
+
+```python
+# The pattern I use now: instrument every layer separately
+def debug_rag_pipeline(query: str) -> dict:
+    results = {}
+    
+    # Layer 1: Does retrieval return anything useful?
+    retrieved = retriever.get_relevant_documents(query)
+    results["retrieval"] = {
+        "count": len(retrieved),
+        "top_doc": retrieved[0].page_content[:200] if retrieved else None,
+        "scores": [d.metadata.get("score") for d in retrieved[:3]],
+    }
+    
+    # Layer 2: Is the prompt constructed correctly?
+    prompt = build_prompt(query, retrieved)
+    results["prompt_length_tokens"] = count_tokens(prompt)
+    results["prompt_preview"] = prompt[:500]
+    
+    # Layer 3: What is the raw LLM output?
+    raw_output = llm.invoke(prompt)
+    results["raw_output"] = raw_output
+    
+    # Layer 4: Does the output parse correctly?
+    try:
+        parsed = output_parser.parse(raw_output)
+        results["parse_success"] = True
+        results["parsed"] = parsed
+    except Exception as e:
+        results["parse_success"] = False
+        results["parse_error"] = str(e)
+    
+    return results
+```
+
+This pattern — instrumenting every layer, making failures visible — is the most directly transferable skill I developed.
+
+## Knowing When Not to Use AI
+
+This one surprised me. I expected to spend my time figuring out *how* to use AI effectively. A significant chunk of my growth was learning to recognize when AI was the wrong tool entirely.
+
+In my early days after joining, I was asked to look at a system that used an LLM to extract structured fields from customer feedback forms. Sentiment, category, urgency, product mentioned. The LLM was doing this across ~2,000 forms a day, at non-trivial cost, with ~88% accuracy.
+
+I spent a week trying to improve the prompt, trying different models, trying chain-of-thought extraction. Got to 91%. The senior engineer on the team looked at it for 20 minutes and said: *"This is a classification problem, not a generation problem."*
+
+We replaced the LLM with a fine-tuned `distilbert-base-uncased` classifier. Training data: 800 labeled examples from the existing LLM outputs (which were mostly correct). Training time: 40 minutes. Accuracy: 96%. Cost: $0 per inference (deployed on a CPU Cloud Run instance). Latency: 12ms instead of 1.4s.
+
+The LLM was solving a problem that didn't need an LLM. It was like using a sledgehammer to hang a picture frame — impressive capability, completely wrong application.
+
+The mental framework I use now: **if the output space is bounded and the mapping from input to output is consistent, it's probably a classification or extraction problem, not a generation problem.** LLMs earn their cost when the output is genuinely open-ended or requires reasoning over complex context.
+
+## Clear Technical Writing Is a Force Multiplier
+
+I did not expect "write better documents" to be career advice I'd take seriously. It was the highest-leverage thing I did in year two.
+
+The specific thing that changed: I started writing one-page technical notes for every non-trivial decision I made. Not design documents — those are heavy and often written to justify decisions already made. Short, honest notes that answered:
+
+- What problem was I solving?
+- What did I try, and what happened?
+- What did I decide, and why?
+- What would I watch for?
+
+These notes served three purposes I didn't anticipate. First, writing them forced me to understand my own decisions. The act of writing "I chose X over Y because..." consistently revealed cases where I had chosen X over Y for no particularly good reason. Second, they made code reviews faster — reviewers had context without me needing to explain everything in the PR description. Third, they became institutional memory. Twice in year two, I found a note I'd written six months earlier that directly answered a question a teammate was stuck on.
+
+The senior engineers who could write clearly about technical problems were disproportionately effective. They could influence decisions outside their own work, because they could explain their thinking to people who weren't in the room.
+
+## Systems Thinking Over Model Knowledge
+
+Early days, when something broke, my instinct was to look at the model. The model is producing bad outputs — there must be something wrong with the model, the prompt, or the training data.
+
+This is usually wrong. The model is almost always doing something reasonable given its inputs. The failure is almost always in the system around the model: stale data in the retrieval index, a malformed prompt template that's been silently broken for two weeks, a response parser that works on 99% of outputs and falls over on the 1% that matters.
+
+The insight that shifted my perspective: **an AI system is a software system that happens to include an LLM.** All the same principles apply. Inputs matter. State management matters. Error handling matters. Observability matters. The LLM is just one component, and usually not the fragile one.
+
+This reframe changed how I approached new systems. Instead of asking "how do I make the model smarter?", I started asking "what could silently go wrong here, and how would I know?" Those are infrastructure questions, not AI questions.
+
+```python
+# The kind of question I now ask before shipping anything:
+
+"""
+1. What happens when the vector store returns 0 results?
+2. What happens when the LLM times out?
+3. What happens when the output doesn't match the expected format?
+4. What happens when the input is 10x larger than expected?
+5. How will I know in 72 hours if this system has degraded?
+"""
+```
+
+Most of the interesting bugs I've found and fixed were in the answers to question 5. Silent degradation — the system is running, the metrics look okay, but the outputs are getting worse — is the hardest failure mode and the one that requires the most upfront investment in monitoring.
+
+## Ask Better Questions, Not More Questions
+
+As an intern, I was afraid to ask questions. As I became more comfortable, I overcorrected — I'd ask questions immediately when I was stuck, without spending enough time thinking first.
+
+The shift came from watching how the best senior engineers asked questions. They didn't ask "how do I fix X?" They'd ask "I'm trying to do Y. I've tried A and B. A didn't work because of Z. B didn't work because of W. I'm now thinking about C, but I'm not sure about this part. Does that reasoning hold?"
+
+This kind of question is valuable to answer because it's already done most of the thinking. It also taught me something: by the time I'd structured a question that well, I'd usually already figured out the answer. The act of articulating the problem precisely tends to surface the solution.
+
+The ratio I aim for now: spend 25 minutes thinking before asking. If I haven't made progress in 25 minutes, the question is clear enough to ask well.
+
+## The Thing I Got Wrong About Career Growth
+
+I assumed career growth in AI engineering was a knowledge accumulation problem. Learn more models, more techniques, more frameworks. Stay current with the papers.
+
+It's not. Or — it's not only that.
+
+The compounding advantages in this field come from:
+
+1. **Debugging speed** — how fast you can diagnose what's wrong and fix it. This compounds with experience.
+2. **Judgment** — knowing which tools fit which problems without having to build the wrong thing first. This takes longer to develop but is rarer.
+3. **Trust** — the degree to which teammates trust your estimates, your reviews, your designs. This is built slowly through consistency and lost quickly through overconfidence.
+
+The AI knowledge matters — you can't navigate this field without understanding how these systems work. But the engineers who plateau at mid-level usually have enough model knowledge. What they often lack is the systems thinking, the communication clarity, and the debugging discipline that turns knowledge into reliable execution.
+
+I'm still early in this career. The things I've described above are the things that moved the needle for me in the first two years. In another two years, I expect I'll look back at this list with the same mixture of recognition and addition that I hope you're feeling now.
+
+The gap between junior and senior isn't as wide as it looked from the junior side. It's just in a different place than I expected.

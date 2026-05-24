@@ -41,7 +41,7 @@ export function formatDate(iso: string): string {
 const MOCK_POSTS: Post[] = [
   {
     title: 'Cutting Agent Latency by 85% with the Multi-Agent Supervisor Pattern',
-    date: '2025-04-20',
+    date: '2026-04-18',
     summary:
       'How I re-architected a monolithic LangGraph agent into a supervisor-worker pattern on GCP Cloud Run and cut end-to-end latency from 12s to 1.8s.',
     tldr:
@@ -55,7 +55,7 @@ const MOCK_POSTS: Post[] = [
   },
   {
     title: 'LangGraph Observability Stack: Tracing Production AI Agents',
-    date: '2025-03-15',
+    date: '2026-04-26',
     summary:
       'Building a full observability stack for LangGraph agents in production — tracing every node execution, tracking token budgets, and surfacing anomalies in real time.',
     tldr:
@@ -68,7 +68,7 @@ const MOCK_POSTS: Post[] = [
   },
   {
     title: 'GCP Cloud Run Patterns for AI Workloads',
-    date: '2025-02-28',
+    date: '2026-05-03',
     summary:
       'A practical guide to deploying AI inference workloads on GCP Cloud Run — covering cold start optimization, GPU instances, request concurrency, and cost modeling.',
     tldr:
@@ -81,9 +81,11 @@ const MOCK_POSTS: Post[] = [
   },
   {
     title: 'Why I Stopped Using Notebooks for Production ML',
-    date: '2025-01-20',
+    date: '2026-05-16',
     summary:
       'Notebooks are great for exploration but catastrophic for production. Here is the migration path I use to move from experimental Jupyter notebooks to a FastAPI service that actually works at scale.',
+    tldr:
+      'Jupyter notebooks accumulate hidden state, non-linear execution, and zero dependency discipline — all compounding liabilities the moment you serve a model in production. I now use a strict notebook → script → service pipeline with explicit gate criteria at each phase.',
     tags: ['Python', 'FastAPI', 'MLOps', 'Engineering'],
     type: 'Opinion',
     readingTime: 6,
@@ -92,10 +94,12 @@ const MOCK_POSTS: Post[] = [
   },
   {
     title: 'Building a RAG Pipeline That Actually Works in Production',
-    date: '2024-12-10',
+    date: '2026-05-16',
     summary:
       'Most RAG tutorials stop at the happy path. This is about the failure modes — chunking strategies, embedding drift, retrieval quality degradation — and how to handle them systematically.',
-    tags: ['RAG', 'LangChain', 'Production', 'AI'],
+    tldr:
+      'I built a RAG pipeline over a customer support knowledge base using Gemini Embeddings and Vertex AI Vector Search. The system failed twice before it worked: catastrophic chunking that destroyed answer context, and retrieval recall collapse where top-k always returned the same stale docs. Structure-aware chunking and Maximum Marginal Relevance retrieval fixed both.',
+    tags: ['RAG', 'LangGraph', 'Production', 'AI'],
     type: 'Case Study',
     readingTime: 14,
     slug: 'rag-pipeline-production',
@@ -103,9 +107,11 @@ const MOCK_POSTS: Post[] = [
   },
   {
     title: 'From Intern to AI Engineer: What I Actually Learned',
-    date: '2024-11-05',
+    date: '2026-05-24',
     summary:
-      'Two years of building production AI systems taught me more about software engineering than about AI. Here is what I would tell myself at the start.',
+      'A year of building production AI systems taught me more about software engineering than about AI. Here is what I would tell myself at the start.',
+    tldr:
+      'The skills that made me effective as an AI engineer were not the ML theory I expected — they were debugging discipline, clear technical writing, knowing when not to use AI, and understanding that systems thinking matters more than model knowledge.',
     tags: ['Career', 'AI', 'Engineering'],
     type: 'Career',
     readingTime: 7,
