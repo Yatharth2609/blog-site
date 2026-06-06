@@ -1,0 +1,300 @@
+---
+title: "MCP and A2A: The Two Protocols Quietly Reshaping How AI Agents Work Together"
+date: "2026-06-06"
+summary: "MCP and A2A solve different problems in the agentic stack — one connects agents to tools, the other connects agents to agents. Understanding the boundary between them is what makes production multi-agent systems actually composable."
+tldr: "Model Context Protocol (MCP) standardizes how an agent connects to external tools and data sources — it's the USB-C of AI tooling. Agent2Agent (A2A) protocol standardizes how agents communicate with each other across organizational boundaries. They're not competing standards; they operate at different layers and are most powerful when used together."
+tags: ["Agents", "MCP", "A2A", "Architecture"]
+type: "Engineering"
+---
+
+Two protocol specs landed in the last year that will probably define how production multi-agent systems are built for the next several years. Most engineers I talk to have heard of one of them. Almost nobody has a clear mental model of how they relate to each other — or why both matter.
+
+Model Context Protocol (MCP) was published by Anthropic in late 2024. Agent2Agent (A2A) came from Google in early 2025. They're often discussed in the same breath, sometimes positioned as competing standards. They're not. They solve completely different problems, and understanding where one ends and the other begins is the most useful thing you can take away from this post.
+
+## The Problem Each One Solves
+
+Start with the problem, not the spec.
+
+### The Tool Integration Problem (MCP)
+
+Before MCP, every LLM application that needed access to external tools — a database, a calendar, a code interpreter, a web search API — had to implement its own integration layer. The OpenAI function calling format was different from Anthropic's tool use format, which was different from whatever custom prompt engineering you were doing with open models. Every tool integration was bespoke.
+
+If you built a tool integration for one application, you couldn't reuse it in another. If you switched model providers, your tool integrations broke. If a new tool appeared, every application that wanted to use it had to write a new adapter.
+
+MCP is the USB-C for this problem. It defines a standard protocol for exposing capabilities — files, APIs, database queries, web searches, code execution — so that any compliant client (an AI application) can connect to any compliant server (a tool provider) without custom integration work.
+
+### The Agent Coordination Problem (A2A)
+
+A different problem: you have two AI agents, built by different teams, potentially running on different infrastructure, possibly even from different organizations. How do they talk to each other?
+
+Not "how does agent A call a function that agent B exposes" — that's the tool problem MCP solves. The deeper question: how does agent A *delegate a task* to agent B, with all the context that entails — the task description, the constraints, the expected output format, the authentication that proves agent A is authorized to make that request?
+
+A2A is about agent-to-agent task delegation at the protocol level. It defines how one agent advertises what it can do (an Agent Card), how another agent makes a request (a Task), how the receiving agent streams back progress and final results, and how capability discovery works across organizational boundaries.
+
+## MCP: How It Actually Works
+
+MCP is a client-server protocol built on JSON-RPC 2.0. An MCP server exposes a set of *tools*, *resources*, and *prompts*. An MCP client (your AI application) discovers what the server exposes and invokes them.
+
+The three primitives:
+
+**Tools** — callable functions the LLM can invoke. Think of these as the traditional function-calling tools, but standardized:
+
+```json
+{
+  "name": "search_knowledge_base",
+  "description": "Searches the internal KB for relevant articles",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query": { "type": "string" },
+      "max_results": { "type": "integer", "default": 5 }
+    },
+    "required": ["query"]
+  }
+}
+```
+
+**Resources** — data the LLM can read. Unlike tools (which are invoked), resources are exposed as readable context — think files, database records, or live data feeds:
+
+```json
+{
+  "uri": "kb://articles/billing-faq",
+  "name": "Billing FAQ",
+  "mimeType": "text/markdown"
+}
+```
+
+**Prompts** — parameterized prompt templates the server exposes for the client to use. Useful for standardizing how common tasks are prompted across different applications.
+
+### Building an MCP Server
+
+Here's a minimal Python MCP server that exposes a knowledge base search:
+
+```python
+from mcp.server import Server
+from mcp.server.models import InitializationOptions
+from mcp.types import Tool, TextContent
+import mcp.server.stdio
+
+app = Server("kb-search-server")
+
+@app.list_tools()
+async def list_tools() -> list[Tool]:
+    return [
+        Tool(
+            name="search_kb",
+            description="Search the customer support knowledge base",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "intent": {"type": "string", "enum": ["billing", "account", "technical", "general"]}
+                },
+                "required": ["query"]
+            }
+        )
+    ]
+
+@app.call_tool()
+async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    if name == "search_kb":
+        results = await kb_search(
+            query=arguments["query"],
+            intent=arguments.get("intent", "general")
+        )
+        return [TextContent(type="text", text=format_results(results))]
+    raise ValueError(f"Unknown tool: {name}")
+
+async def main():
+    async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
+        await app.run(read_stream, write_stream, InitializationOptions())
+```
+
+Any MCP-compatible client — Claude Desktop, a LangGraph agent, a custom application — can now connect to this server and call `search_kb` without any custom integration code. The server handles authentication, rate limiting, and result formatting. The client just calls a standard tool.
+
+### Connecting to MCP from LangGraph
+
+```python
+from langchain_mcp_adapters.client import MultiServerMCPClient
+
+async def build_agent_with_mcp():
+    client = MultiServerMCPClient({
+        "kb-search": {
+            "command": "python",
+            "args": ["servers/kb_search_server.py"],
+            "transport": "stdio",
+        },
+        "calendar": {
+            "url": "https://calendar-mcp.internal.company.com/mcp",
+            "transport": "streamable_http",
+        }
+    })
+    
+    # MCP tools are automatically converted to LangGraph-compatible tool nodes
+    tools = await client.get_tools()
+    
+    graph = StateGraph(AgentState)
+    graph.add_node("agent", create_react_agent(model, tools))
+    # ... rest of graph construction
+    return graph.compile()
+```
+
+The key benefit here: if the calendar team changes their MCP server — adds new tools, updates input schemas — your agent picks up those changes automatically on next connection. No adapter updates, no re-deployment.
+
+## A2A: How It Actually Works
+
+A2A operates at a higher level. Where MCP is about an agent accessing capabilities, A2A is about agents delegating work to each other.
+
+The core primitives:
+
+**Agent Card** — a JSON document that an agent publishes to advertise itself. It describes what the agent can do, what inputs it accepts, what outputs it produces, and how to reach it:
+
+```json
+{
+  "name": "SupportAgent",
+  "description": "Handles tier-1 customer support queries for billing, account, and product questions",
+  "version": "2.1.0",
+  "url": "https://support-agent.internal.company.com",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": true
+  },
+  "skills": [
+    {
+      "id": "handle-billing-query",
+      "name": "Billing Query Handler",
+      "description": "Resolves billing questions including invoices, payments, and subscription changes",
+      "inputModes": ["text"],
+      "outputModes": ["text"]
+    }
+  ],
+  "authentication": {
+    "schemes": ["Bearer"]
+  }
+}
+```
+
+**Task** — the unit of work that one agent sends to another. It has an ID, a message, and progresses through defined states:
+
+```
+submitted → working → [input-required] → completed | failed | canceled
+```
+
+```python
+import httpx
+import asyncio
+
+async def delegate_to_support_agent(query: str, session_id: str):
+    """Delegate a support query to the specialized support agent via A2A."""
+    
+    async with httpx.AsyncClient() as client:
+        # Send a task
+        response = await client.post(
+            "https://support-agent.internal.company.com/tasks/send",
+            headers={"Authorization": f"Bearer {get_token()}"},
+            json={
+                "id": f"task-{session_id}-{int(asyncio.get_event_loop().time())}",
+                "message": {
+                    "role": "user",
+                    "parts": [{"type": "text", "text": query}]
+                }
+            }
+        )
+        task = response.json()
+        return task["id"]
+
+async def stream_task_result(task_id: str):
+    """Stream the task result using Server-Sent Events."""
+    
+    async with httpx.AsyncClient() as client:
+        async with client.stream(
+            "GET",
+            f"https://support-agent.internal.company.com/tasks/{task_id}/events",
+            headers={"Authorization": f"Bearer {get_token()}"}
+        ) as response:
+            async for line in response.aiter_lines():
+                if line.startswith("data:"):
+                    event = json.loads(line[5:])
+                    if event["type"] == "TaskStatusUpdateEvent":
+                        if event["status"]["state"] == "completed":
+                            return event["status"]["message"]
+                        elif event["status"]["state"] == "failed":
+                            raise RuntimeError(f"Task failed: {event['status']['message']}")
+```
+
+**Discovery** — agents find each other through Agent Card URLs. A registry isn't mandated by the spec, but the pattern is: publish your Agent Card at a well-known URL, let other agents (or an orchestrator) discover and cache it.
+
+```python
+async def discover_agent(agent_url: str) -> dict:
+    """Fetch an Agent Card from a well-known URL."""
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"{agent_url}/.well-known/agent.json")
+        return response.json()
+
+# The orchestrator discovers available agents at startup
+agents = {
+    "support": await discover_agent("https://support-agent.internal.company.com"),
+    "billing": await discover_agent("https://billing-agent.finance.company.com"),  # different team
+    "escalation": await discover_agent("https://escalation-agent.ops.company.com")
+}
+```
+
+## Where MCP Ends and A2A Begins
+
+This is the boundary that matters:
+
+**MCP** governs the relationship between an *agent* and a *tool/data source*. The tool is passive — it exposes capabilities, the agent decides when and how to invoke them. The tool doesn't have its own goals, reasoning, or state across requests. It's synchronous and stateless from the agent's perspective.
+
+**A2A** governs the relationship between two *agents*. Both parties can have their own reasoning, their own state, their own tools, their own subagents. The receiving agent is active — it can ask clarifying questions (`input-required` state), stream partial results, fail gracefully, or complete asynchronously. The task lifecycle is explicitly managed.
+
+A useful way to think about it:
+
+- An MCP server is like a library — it exposes functions, you call them
+- An A2A agent is like a contractor — you describe a job, they figure out how to do it and report back
+
+In a production multi-agent system, you'll often use both. Your LangGraph supervisor agent uses MCP to access tools (search, databases, APIs). When a task exceeds the supervisor's capabilities — say, a complex financial analysis that requires a specialized finance agent from another team — it delegates via A2A.
+
+## How They Compose in Practice
+
+Here's what this looks like in a real architecture:
+
+```
+User Query
+    ↓
+Supervisor Agent (LangGraph)
+    ├─── MCP: search_kb(query)           # tool call via MCP
+    ├─── MCP: get_order_status(order_id) # tool call via MCP
+    │
+    └─── A2A Task → Finance Agent        # delegation via A2A
+             ├─── MCP: query_ledger()    # Finance Agent's own tools
+             └─── MCP: run_calculation() # Finance Agent's own tools
+```
+
+The supervisor doesn't know or care what tools the Finance Agent uses internally. It sends an A2A task with a description of what it needs. The Finance Agent handles it using whatever MCP tools it has access to, and returns a result. The boundary between the two agents is clean.
+
+This is the composability that both protocols are trying to enable — and it's the main reason they're complementary rather than competing.
+
+<Callout type="info">
+Both MCP and A2A are still evolving. The MCP spec has been fairly stable since 1.0, but A2A is newer and implementation maturity varies significantly between vendors. Before building a cross-organizational A2A integration in production, verify that both sides are using compatible spec versions.
+</Callout>
+
+## Current Ecosystem State
+
+**MCP** has broad adoption. Claude Desktop, Cursor, Windsurf, and most major AI coding tools support it as a client. LangChain has official adapters. There are registries of community-built MCP servers covering everything from GitHub to Postgres to Slack. If you're building tools that AI agents should be able to use, building an MCP server is the right investment.
+
+**A2A** is earlier. Google published the spec and has reference implementations, but adoption outside the Google ecosystem is still developing. LangGraph has experimental A2A support. The inter-organizational use case — where the real power of A2A lies — requires both sides to implement the spec, which takes coordination.
+
+My read: MCP is ready to use in production today. A2A is worth understanding and building toward, especially if you're designing systems that will need to coordinate with agents outside your control — third-party SaaS AI features, partner organization agents, or specialized agents from different internal teams that you don't want to tightly couple.
+
+## What to Actually Build Today
+
+If you're designing a new multi-agent system:
+
+1. **Use MCP for all tool integrations.** Every database query, API call, and data source becomes an MCP server. Your agents become vendor-agnostic by default, and tools are reusable across multiple agent projects.
+
+2. **Design your agent interfaces with A2A in mind.** Even if you're not implementing the full A2A spec yet, structure your agent APIs so that they can become A2A-compliant later: accept task objects with IDs, return structured results, support streaming, handle errors with explicit state transitions rather than exceptions.
+
+3. **Don't tightly couple agent-to-agent communication.** If agent A calls agent B through a direct function call or internal API today, design that interface so it can be wrapped in an A2A task later without restructuring either agent.
+
+The protocols aren't the hard part. The hard part is designing agent boundaries that make composition natural — deciding what belongs in one agent versus two, what should be a tool versus an agent, what requires synchronous results versus async task delegation. MCP and A2A give you the plumbing for those decisions. Making the right architectural choices is still entirely on you.

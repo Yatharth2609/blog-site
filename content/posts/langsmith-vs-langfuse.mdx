@@ -1,0 +1,300 @@
+---
+title: "LangSmith vs Langfuse: Choosing the Right Observability Stack for Your AI Pipeline"
+date: "2026-06-06"
+summary: "A practical comparison of LangSmith and Langfuse for production LLM observability — covering tracing depth, self-hosting, cost structure, and the exact scenarios where each one wins."
+tldr: "LangSmith wins on zero-config LangGraph integration and dataset-driven evals. Langfuse wins on self-hosting economics, vendor neutrality, and cost at scale. Neither is universally better — the right answer depends entirely on your stack and your data residency constraints."
+tags: ["Observability", "LangSmith", "Langfuse", "LLMOps"]
+type: "Engineering"
+---
+
+When we started tracing our LangGraph agents in production, the choice felt obvious: use LangSmith. It's from the same team, it's tightly integrated, and onboarding takes about 20 minutes. Three months later, we were seriously evaluating a migration to Langfuse. Not because LangSmith was bad — it wasn't — but because the economics and the data residency story had changed.
+
+This post is the comparison I wish I'd had before making that initial decision. I'm not going to tell you which one is objectively better, because the answer genuinely depends on your situation. I will tell you what each one is actually like to run in production, and exactly when to pick each one.
+
+## What We Were Instrumenting
+
+Context matters for comparisons like this. Our stack:
+
+- LangGraph multi-agent system (supervisor + 8 worker agents)
+- ~1,000 LLM calls per day across deployments
+- Hard GDPR requirement: no user query content leaves our internal infrastructure
+- Two engineers on the team, nobody wants to own a tracing backend
+
+The GDPR constraint alone eliminated LangSmith's cloud offering for us — LangSmith cloud routes data through US-based infrastructure. That pushed us toward self-hosted LangSmith or Langfuse. The comparison from that point on was mostly between those two.
+
+## LangSmith
+
+### The Integration Story
+
+LangSmith's integration with LangGraph is genuinely frictionless. You add two environment variables and every node execution, LLM call, tool invocation, and state transition is automatically traced with no additional code:
+
+```python
+import os
+os.environ["LANGCHAIN_TRACING_V2"] = "true"
+os.environ["LANGCHAIN_API_KEY"] = "ls__..."
+os.environ["LANGCHAIN_PROJECT"] = "production-supervisor"
+
+# Everything below traces automatically
+from langgraph.graph import StateGraph
+# ... your existing graph code, unchanged
+```
+
+That's it. The automatic instrumentation captures token counts, latency per node, the full message history at each step, and the graph traversal path — all without decorators or manual span management.
+
+For LangGraph specifically, the trace UI is exceptional. You get a visual representation of which graph nodes executed, in what order, with timing breakdowns that make it trivial to answer "which node is the latency bottleneck right now?"
+
+### Datasets and Evals
+
+This is where LangSmith genuinely pulls ahead. The dataset management and evaluation workflow is first-class:
+
+```python
+from langsmith import Client
+
+client = Client()
+
+# Push production traces to a dataset with one flag
+client.create_example(
+    inputs={"query": "How do I cancel my subscription?"},
+    outputs={"response": "Navigate to Settings > Billing > Cancel Plan."},
+    dataset_name="support-golden-set"
+)
+
+# Run evals against the dataset
+from langsmith.evaluation import evaluate
+
+results = evaluate(
+    lambda inputs: pipeline.invoke(inputs["query"]),
+    data="support-golden-set",
+    evaluators=[correctness_evaluator, faithfulness_evaluator],
+    experiment_prefix="v2-mmr-retrieval"
+)
+```
+
+The experiment comparison UI — overlaying two eval runs side by side to see which model or prompt change actually improved things — is the best I've seen in this space. If you're running systematic evals and comparing prompt variants, LangSmith's tooling here is meaningfully better than what Langfuse currently offers.
+
+### Self-Hosting LangSmith
+
+LangSmith offers a self-hosted version (LangSmith Enterprise) via Kubernetes Helm charts. The deployment is relatively straightforward if you have an existing K8s cluster:
+
+```bash
+helm repo add langchain https://langchain-ai.github.io/helm-charts
+helm install langsmith langchain/langsmith \
+  --namespace langsmith \
+  --create-namespace \
+  --values langsmith-values.yaml
+```
+
+The `langsmith-values.yaml` minimum viable config:
+
+```yaml
+config:
+  langsmithLicenseKey: "ls_license_..."
+  openaiApiKey: ""  # Only needed for LangSmith's own AI features
+
+postgres:
+  external: true
+  external_connection_string: "postgresql://..."
+
+redis:
+  external: true
+  external_connection_string: "redis://..."
+
+ingress:
+  enabled: true
+  hostname: "langsmith.internal.yourdomain.com"
+```
+
+The honest reality: self-hosted LangSmith is substantially more operationally complex than Langfuse's self-hosted option. It runs ~8 services (API server, queue worker, playground, clickhouse for analytics, plus your external Postgres and Redis). In practice, you're maintaining a non-trivial internal platform.
+
+<Callout type="warning">
+LangSmith self-hosted also requires a paid Enterprise license. As of mid-2026, pricing starts at a per-seat model that makes it expensive for small teams. The total cost of ownership — license + infra + ops time — is significant.
+</Callout>
+
+### LangSmith: The Numbers
+
+For our 1000 LLM calls/day workload:
+
+| Deployment | Cost/month | Notes |
+|-----------|------------|-------|
+| Cloud (Developer) | ~$0 | 5k traces free, then $0.005/trace |
+| Cloud (Plus) | ~$10 | 100k traces included |
+| Self-hosted Enterprise | ~$100 | License + K8s infra |
+
+The cloud pricing is reasonable at low volume. At 1000 LLM calls/day (roughly 30k/month, depending on trace definition), you're looking at $200–600/month on cloud before negotiating enterprise pricing.
+
+## Langfuse
+
+### The Integration Story
+
+Langfuse has two integration paths: native SDK tracing, or using the LangChain/LangGraph callback handler.
+
+The callback approach is nearly as frictionless as LangSmith for existing LangGraph projects:
+
+```python
+from langfuse.callback import CallbackHandler
+
+handler = CallbackHandler(
+    public_key="pk-lf-...",
+    secret_key="sk-lf-...",
+    host="https://langfuse.yourdomain.com"  # self-hosted
+)
+
+# Pass as a callback to your LangGraph invocation
+result = graph.invoke(
+    {"messages": [HumanMessage(content=query)]},
+    config={"callbacks": [handler]}
+)
+```
+
+For finer-grained control, the native SDK gives you explicit trace/span management:
+
+```python
+from langfuse import Langfuse
+from langfuse.decorators import observe, langfuse_context
+
+langfuse = Langfuse()
+
+@observe()
+async def supervisor_node(state: dict) -> dict:
+    langfuse_context.update_current_observation(
+        name="supervisor",
+        input=state["messages"][-1].content,
+        metadata={"task_type": state.get("task_type")}
+    )
+    
+    result = await classify_and_route(state)
+    
+    langfuse_context.update_current_observation(
+        output=result,
+        usage={
+            "input": 120,
+            "output": 45,
+            "unit": "TOKENS"
+        }
+    )
+    return result
+```
+
+The native SDK approach is more verbose but gives you complete control — critical when you need to capture custom metadata, business context, or non-LLM spans.
+
+One honest gap: Langfuse's LangGraph integration doesn't yet produce the same visual graph traversal view that LangSmith does for stateful agents. You get spans and latency, but not the graph-native visualisation. For debugging complex agent routing issues, this matters.
+
+### Self-Hosting Langfuse
+
+This is where Langfuse wins decisively. It ships as a single Docker Compose file:
+
+```yaml
+# docker-compose.yml — official Langfuse self-hosted setup
+version: "3"
+services:
+  langfuse-server:
+    image: langfuse/langfuse:latest
+    depends_on:
+      - postgres
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://langfuse:password@postgres:5432/langfuse
+      NEXTAUTH_SECRET: "changeme"
+      NEXTAUTH_URL: "https://langfuse.yourdomain.com"
+      SALT: "changeme"
+
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: langfuse
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
+```
+
+That's the entire deployment. One service, one database. On a `e2-standard-2` GCP instance (2 vCPU, 8GB), it comfortably handles our 1k calls/day with 5ms trace ingestion overhead.
+
+<Callout type="info">
+Langfuse is open source (MIT licensed). Self-hosting is completely free — you're only paying for the compute you run it on. For our workload, that's ~$35/month for the instance, ~$20/month for managed Cloud SQL. Total: $55/month, no license fee.
+</Callout>
+
+The Langfuse team has made self-hosting genuinely low-maintenance. Upgrades are a one-line docker pull. The database schema is managed via Prisma migrations that run automatically on startup. We've been running it for four months without a single incident that required hands-on intervention.
+
+### Langfuse: Evals and Datasets
+
+Langfuse's eval workflow is improving but is currently more manual than LangSmith's. The dataset API exists and works:
+
+```python
+from langfuse import Langfuse
+
+lf = Langfuse()
+
+# Create a dataset
+dataset = lf.create_dataset(name="support-golden-set")
+
+# Add items
+lf.create_dataset_item(
+    dataset_name="support-golden-set",
+    input={"query": "How do I cancel my subscription?"},
+    expected_output={"answer": "Navigate to Settings > Billing > Cancel Plan."}
+)
+
+# Run experiment
+for item in lf.get_dataset("support-golden-set").items:
+    with item.observe(run_name="v2-mmr-retrieval") as trace:
+        output = pipeline.invoke(item.input["query"])
+        trace.score(name="correctness", value=score_correctness(output, item.expected_output))
+```
+
+It works, but the comparison UI between experiment runs is less polished than LangSmith's. You're doing more analysis in Python or SQL against the Langfuse API than you are in the UI.
+
+### Langfuse: The Numbers
+
+| Deployment | Cost/month | Notes |
+|-----------|------------|-------|
+| Cloud (Hobby) | Free | 50k observations/month |
+| Cloud (Pro) | $59 | 1M observations/month |
+| Cloud (Team) | $99+ | Unlimited + SSO |
+| Self-hosted | $20 (infra only) | No license fee, open source |
+
+At our volume, self-hosted Langfuse costs $20/month total. LangSmith cloud equivalent would be $100-200/month. That difference paid for half our Cloud Run bill.
+
+## Head-to-Head
+
+| Dimension | LangSmith | Langfuse |
+|-----------|-----------|----------|
+| LangGraph integration | ✅ Native, zero-config | ⚠️ Callback-based, no graph viz |
+| Eval + dataset tooling | ✅ First-class, excellent UI | ⚠️ Functional, less polished |
+| Self-hosting complexity | ❌ ~8 services, K8s required | ✅ Single container, ~10min setup |
+| Self-hosting cost | ❌ Enterprise license required | ✅ Open source, infra only |
+| Vendor neutrality | ❌ LangChain ecosystem | ✅ SDK-agnostic |
+| Data residency control | ✅ (self-hosted only) | ✅ Self-hosted or EU cloud |
+| Cloud pricing at scale | ⚠️ Gets expensive fast | ✅ Cheaper per observation |
+| UI quality | ✅ Excellent | ✅ Very good |
+| Prompt management | ✅ Good | ✅ Good |
+
+## When to Use LangSmith
+
+**You're deep in the LangChain/LangGraph ecosystem and you want zero integration friction.** If your entire stack is LangGraph, you value the visual graph trace UI, and you're running systematic evals where the experiment comparison UI saves your team hours per week — LangSmith cloud is worth the cost.
+
+**Your team is small and ops burden matters more than cost.** LangSmith cloud is someone else's infrastructure problem. If you're a two-person team building fast, that's worth $400/month.
+
+**You need first-class eval infrastructure.** If dataset management and prompt version comparison are central to your workflow — not a nice-to-have — LangSmith's tooling here is genuinely ahead.
+
+## When to Use Langfuse
+
+**You have data residency requirements.** Self-hosted Langfuse running on your own infrastructure is the cleanest answer to GDPR/HIPAA/SOC2 data residency questions. No negotiating with a vendor about where your traces live.
+
+**You're at scale and watching infrastructure costs.** At 1M+ LLM calls/month, the cost delta between self-hosted Langfuse ($55/month) and LangSmith cloud ($400–600/month) compounds quickly. That's real budget.
+
+**You're not exclusively on LangChain.** If you're mixing LangGraph with direct API calls, Vertex AI, or your own inference infrastructure, Langfuse's SDK-agnostic approach means everything traces consistently. LangSmith's automatic instrumentation only fires on LangChain primitives.
+
+**You want to own the stack long-term.** Langfuse's open source model means you're not locked into a vendor's pricing decisions. The codebase is readable and the data lives in a Postgres schema you fully control.
+
+## What We Ended Up Doing
+
+We run self-hosted Langfuse for production tracing and use LangSmith cloud's free tier for evaluation experiments — specifically for the dataset comparison UI when running prompt experiments.
+
+That turned out to be a surprisingly natural split. Langfuse handles the operational concern (where did this trace fail, which node was slow, what was the token budget for this session). LangSmith handles the experimentation concern (is prompt variant B actually better than A on our golden set).
+
+You don't have to pick just one.

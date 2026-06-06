@@ -50,7 +50,6 @@ const MOCK_POSTS: Post[] = [
     type: 'Engineering',
     readingTime: 8,
     slug: 'building-multi-agent-supervisor',
-    featured: true,
     body: '',
   },
   {
@@ -116,6 +115,46 @@ const MOCK_POSTS: Post[] = [
     type: 'Career',
     readingTime: 7,
     slug: 'intern-to-ai-engineer',
+    body: '',
+  },
+  {
+    title: 'LangSmith vs Langfuse: Choosing the Right Observability Stack for Your AI Pipeline',
+    date: '2026-05-30',
+    summary:
+      'A practical comparison of LangSmith and Langfuse for production LLM observability — covering tracing depth, self-hosting, cost structure, and the exact scenarios where each one wins.',
+    tldr:
+      'LangSmith wins on zero-config LangGraph integration and dataset-driven evals. Langfuse wins on self-hosting economics, vendor neutrality, and cost at scale. Neither is universally better — the right answer depends entirely on your stack and your data residency constraints.',
+    tags: ['Observability', 'LangSmith', 'Langfuse', 'LLMOps'],
+    type: 'Engineering',
+    readingTime: 10,
+    slug: 'langsmith-vs-langfuse',
+    body: '',
+  },
+  {
+    title: 'MCP and A2A: The Two Protocols Quietly Reshaping How AI Agents Work Together',
+    date: '2026-05-30',
+    summary:
+      'MCP and A2A solve different problems in the agentic stack — one connects agents to tools, the other connects agents to agents. Understanding the boundary between them is what makes production multi-agent systems actually composable.',
+    tldr:
+      'Model Context Protocol (MCP) standardizes how an agent connects to external tools and data sources. Agent2Agent (A2A) standardizes how agents delegate tasks to each other across organizational boundaries. They operate at different layers and are most powerful when used together.',
+    tags: ['Agents', 'MCP', 'A2A', 'Architecture'],
+    type: 'Engineering',
+    readingTime: 12,
+    slug: 'mcp-and-a2a-protocols',
+    body: '',
+  },
+  {
+    title: 'SDLC is Broken. Here\'s What\'s Replacing It.',
+    date: '2026-06-06',
+    summary:
+      'Traditional SDLC was designed for humans writing code line by line. AI changes the unit of work from lines to features — and the whole process breaks. Here is what AI-native development methodologies like Spec-Driven Development, AI-SDLC, and BMaD are doing instead.',
+    tldr:
+      'Traditional SDLC assumes humans are the bottleneck. Vibe coding assumes prompts are enough. Both fail in the AI era. The methodologies that actually work — Spec-Driven Development, AI-SDLC, and BMaD — treat the specification as the primary artifact, not the code.',
+    tags: ['AI Engineering', 'Engineering', 'BMaD', 'SDLC'],
+    type: 'Opinion',
+    readingTime: 11,
+    slug: 'ai-sdlc-spec-driven-bmad',
+    featured: true,
     body: '',
   },
 ]

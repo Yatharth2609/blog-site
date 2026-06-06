@@ -1,0 +1,252 @@
+---
+title: "SDLC is Broken. Here's What's Replacing It."
+date: "2026-06-06"
+summary: "Traditional SDLC was designed for humans writing code line by line. AI changes the unit of work from lines to features — and the whole process breaks. Here is what AI-native development methodologies like Spec-Driven Development, AI-SDLC, and BMaD are doing instead."
+tldr: "Traditional SDLC assumes humans are the bottleneck. Vibe coding assumes prompts are enough. Both fail in the AI era. The methodologies that actually work — Spec-Driven Development, AI-SDLC, and BMaD — treat the specification as the primary artifact, not the code. The shift is from writing code to designing systems that AI can implement correctly."
+tags: ["AI Engineering", "Engineering", "BMaD", "SDLC"]
+type: "Opinion"
+---
+
+There's a process problem nobody is talking about loudly enough.
+
+We spent decades building software development methodologies — Waterfall, Agile, Scrum, SAFe, Kanban — all of them designed around a single assumption: **humans are writing the code**. The ceremonies, the sprint structures, the story point estimation, the code review workflows — every piece of it was calibrated to the throughput and failure modes of a human developer sitting at a keyboard.
+
+That assumption is no longer true. And the tooling, the process, and the culture haven't caught up.
+
+The result is two camps that are both failing, just in different ways.
+
+## Camp 1: Old-School SDLC
+
+The first camp is teams still running traditional SDLC or Scrum on top of AI tooling. They've adopted Copilot and Cursor, they've noticed their engineers are faster — and they've concluded that AI is just a more powerful autocomplete. So the process stays the same: two-week sprints, story point estimation, PR-by-PR reviews, retrospectives.
+
+The problem: the unit of work has fundamentally changed. A senior engineer with Cursor and a well-specified task can produce a feature in three hours that would have taken three days. But the sprint ceremonies, the estimation meetings, the Jira ticket workflow — these were all sized for three-day features, not three-hour ones. The tooling got 10x faster and the process didn't.
+
+Worse: AI doesn't fail like humans fail. A human writing bad code usually produces code that's visibly wrong or fails immediately. An AI confidently implementing an underspecified feature produces code that *looks* right, passes unit tests (that it also wrote), and breaks subtly in production three weeks later. The review process designed to catch human error is poorly calibrated for AI error.
+
+## Camp 2: Vibe Coding
+
+The second camp overcorrected. They saw the rigidity of traditional SDLC, figured the process was the problem, and threw it out. The result is what people are calling "vibe coding" — opening a chat window, describing what you want, accepting what the AI produces, moving on.
+
+At small scale, with throwaway prototypes, this works fine. At production scale, with a team, over months — it's technical debt accumulation at AI speed.
+
+The specific failure modes I've watched vibe-coded systems develop:
+
+- **No coherent architecture.** Each conversation is stateless. The AI doesn't remember that it made an architectural decision in a previous session that contradicts what you're asking for now. The system accumulates local optima that don't compose.
+- **Context drift.** Three months in, the codebase has grown beyond what fits in context. The AI now generates code inconsistent with the existing patterns because it can't see them. You spend more time correcting drift than writing new features.
+- **Uncheckable correctness.** If you didn't write the code and you don't have tests with meaningful coverage, you have no reliable way to verify the AI's output is correct. You're trusting a stochastic system with no accountability loop.
+
+Vibe coding treats AI as a magic box. The output is only as good as your ability to specify the input — and without methodology, specification is ad hoc.
+
+## What's Actually Working
+
+The methodologies that work in the AI era share a common insight: **the specification is now the primary artifact, not the code**.
+
+When humans wrote all the code, the code was where knowledge lived — you could read it to understand what the system did. When AI writes the code from specifications, the specification is where intent lives. The code is an artifact of the spec, not the primary source of truth.
+
+This sounds like a subtle shift. It restructures everything.
+
+## Spec-Driven Development
+
+Spec-Driven Development (SDD) is the most straightforward expression of this shift. The workflow:
+
+1. Write a precise, complete specification before any AI generates any code.
+2. The AI implements from the spec.
+3. Divergence from the spec is treated as a bug — in the code, or in the spec.
+4. The spec is updated before the code ever is.
+
+The specification isn't a Confluence page or a Jira description. It's a structured document that covers:
+
+- **What** the system does (user-facing behavior, including edge cases)
+- **How** it's structured (data models, interfaces between components, dependency boundaries)
+- **Why** specific decisions were made (the constraint or tradeoff that ruled out alternatives)
+- **What correct looks like** (acceptance criteria that can be evaluated without running the system)
+
+Here's what a SDD spec looks like for a real feature — an email notification system:
+
+```markdown
+# Feature: Post Notification Email
+
+## Behavior
+When a new post is published (defined as: a post with `published: true` 
+that was not published in the previous build), send one email per 
+subscriber containing:
+- Post title
+- Post date (formatted as "DD Month YYYY")
+- Summary (max 280 chars, truncated with "…" if longer)
+- Tag list
+- Link to post URL
+
+## Constraints
+- One email per subscriber per post. Idempotent: re-running must not 
+  re-send to subscribers who already received this post.
+- Subscriber list source: data/subscribers.json, array of email strings.
+- Email sender: Resend API (RESEND_API_KEY in env).
+- Must not throw on individual send failure — log and continue.
+
+## Interface
+Input: Post object (title, date, summary, tags[], slug)
+Output: { sent: number, failed: number, skipped: number }
+
+## Acceptance Criteria
+- Given 3 subscribers and 1 new post, sent === 3, failed === 0
+- Given Resend API returns 4xx for one subscriber, failed === 1, 
+  sent === 2, process does not abort
+- Given no new posts, returns early with sent === 0 and no API calls
+```
+
+With a spec this precise, the AI's output is verifiable. You can read the spec, read the generated code, and answer the question: "does this code implement the spec?" That question is tractable. "Is this code correct?" — without a spec — isn't.
+
+The discipline that makes SDD actually work: **the spec must be complete before implementation starts**. The moment you start implementation and realize the spec is underspecified, you stop and update the spec, not the code. This forces the thinking to happen at the right time.
+
+## AI-SDLC
+
+AI-SDLC is a broader reimagining of the entire software development lifecycle for AI-assisted teams. Rather than running traditional SDLC phases with AI tools bolted on, AI-SDLC restructures each phase around what AI is good at and where human judgment is irreplaceable.
+
+The traditional phases and what they become:
+
+### Requirements → Specification Engineering
+
+Traditional requirements gathering produces Jira tickets and user stories. In AI-SDLC, this phase produces machine-readable specifications — documents structured so that an AI agent can implement from them with minimal ambiguity.
+
+The output isn't "As a user, I want to search posts so that I can find content." It's the SDD spec from above: behavior, constraints, interfaces, and acceptance criteria. Writing good specs is now a core engineering skill, arguably more important than knowing the implementation language.
+
+### Design → Architecture-as-Spec
+
+System design doesn't produce diagrams and documents that inform the code. It produces specifications that *are* the code's structure. Component boundaries, interface contracts, data models — these are defined precisely enough that AI can implement each component independently without violating the overall architecture.
+
+```markdown
+# Component: Search API
+
+## Interface
+POST /api/search
+Body: { query: string (max 500 chars) }
+Response: SearchResult[] | { error: string }
+
+## Dependencies
+- Reads: data/embeddings.json (precomputed, loaded at startup)
+- Calls: Google Gemini Embedding API (embed query, then cosine similarity)
+- Reads: lib/posts.ts getAllPosts()
+
+## Invariants
+- Must return results in descending score order
+- Must not return posts with score < 0.3
+- Must complete within 2000ms p95
+- embeddings.json loaded once at startup, not per-request
+```
+
+With specs like these, two engineers can build two components simultaneously without coordination overhead — the interface spec IS the coordination.
+
+### Development → Supervised AI Implementation
+
+This is where vibe coding goes wrong and AI-SDLC goes right. Development isn't "prompt the AI and ship it." It's:
+
+1. AI implements from the spec
+2. Human reviews the implementation against the spec, not against intuition
+3. Tests are generated from the acceptance criteria, not written to describe what the code happens to do
+4. Divergences are resolved by updating the spec first, then regenerating
+
+The human's job in this phase shifts from writing code to specifying clearly, reviewing against specs, and making judgment calls the spec didn't cover. The ratio of thinking-to-typing shifts dramatically.
+
+### Testing → Spec Validation
+
+Traditional testing asks "does this code do what we thought it would do?" — often producing tests that describe bugs, not correct behavior. In AI-SDLC, tests are derived from acceptance criteria in the spec. If the spec says `sent === 3` for 3 subscribers, that's a test. The AI writes the test from the spec. The test is correct by construction.
+
+### Deployment → No Change (Yet)
+
+Deployment and infrastructure patterns haven't fundamentally changed yet. This is where AI-SDLC converges back to standard practices.
+
+## BMaD: Blueprint, Manifest, and Deploy
+
+BMaD is an emerging methodology specifically for AI-agent-driven development — teams where AI agents are first-class participants in the development process, not just tools that individual engineers use.
+
+The three phases:
+
+### Blueprint
+
+The Blueprint phase produces a complete system design that an AI agent can execute without requiring human clarification mid-task. The output is a set of structured documents:
+
+- **Architecture Blueprint**: Component diagram, dependency graph, interface contracts
+- **Data Blueprint**: Schema definitions, data flow, state management
+- **Agent Blueprint**: Which AI agent handles which component, what context each agent needs
+
+The key property of a good Blueprint: any agent given the Blueprint and assigned a specific component can implement that component correctly in isolation. No cross-component assumptions, no implicit shared knowledge.
+
+```markdown
+# Blueprint: Blog Search Feature
+
+## Components
+1. SearchAPI (FastAPI endpoint) — owned by: BackendAgent
+2. EmbeddingsCache (startup loader) — owned by: BackendAgent  
+3. SearchUI (React component) — owned by: FrontendAgent
+4. EmbeddingsScript (CLI) — owned by: DevToolsAgent
+
+## Interface Contracts
+SearchAPI ← SearchUI: POST /api/search { query: string }
+SearchAPI → SearchUI: SearchResult[]
+EmbeddingsCache ← SearchAPI: Map<slug, number[]> (injected at startup)
+EmbeddingsScript → EmbeddingsCache: writes data/embeddings.json
+
+## Shared Types (defined once, used by all agents)
+interface SearchResult {
+  slug: string; title: string; score: number; excerpt: string
+}
+```
+
+### Manifest
+
+The Manifest phase breaks the Blueprint into executable task lists — one Manifest per agent, per component. Each item in the Manifest is a task that can be completed and verified independently.
+
+This is the layer where AI-SDLC's spec-per-task meets multi-agent orchestration:
+
+```markdown
+# Manifest: SearchAPI (BackendAgent)
+
+## Task 1: Embedding loader
+- Implement: load data/embeddings.json at module startup
+- Interface: export const embeddings: Record<string, number[]>
+- Acceptance: throws if file missing, returns empty object if empty
+- Spec: see embeddings-loader.spec.md
+
+## Task 2: Cosine similarity
+- Implement: cosineSimilarity(a: number[], b: number[]): number
+- Acceptance: cosineSimilarity([1,0],[1,0]) === 1.0,  
+              cosineSimilarity([1,0],[0,1]) === 0.0
+- Pure function, no side effects
+
+## Task 3: Search endpoint
+- Implement: POST /api/search
+- Dependencies: Tasks 1 and 2 must be complete
+- Acceptance criteria: see search-api.spec.md
+```
+
+The Manifest is the contract between the human engineering lead and the AI agents. It makes progress trackable and verifiable at every step.
+
+### Deploy
+
+The Deploy phase in BMaD includes a human review gate between each Manifest task. Not because AI can't be trusted, but because the Manifest task is the smallest unit where a human can meaningfully verify correctness against the spec.
+
+The pattern that emerges: AI implements a Manifest task, human reviews against the spec in the Manifest, gates merge. The human isn't reviewing code quality or style — they're verifying spec compliance. This is faster than traditional code review because the question is binary: does this implement the spec or not?
+
+## Why Old-School Vibe Coding Fails at Scale
+
+To be precise about what "vibe coding" actually gets wrong:
+
+**It doesn't accumulate knowledge.** Each conversation is independent. The AI doesn't build a mental model of your system across sessions. The human does — but informally, in their head, uncheckable.
+
+**It doesn't handle team scale.** Three engineers vibe coding the same codebase will produce three incompatible internal models of what the system does. There's no shared specification to reconcile against.
+
+**It doesn't survive turnover.** When someone leaves, they take the implicit knowledge with them. A codebase with no specs is a codebase that can only be understood by whoever built it, and only while they remember it.
+
+**It optimizes for velocity at the cost of correctness.** Moving fast by skipping specification means you're generating features at high speed toward an incompletely specified target. You ship faster and break more — in ways that are harder to diagnose because the spec that would tell you what correct looks like doesn't exist.
+
+## The Shift That's Actually Hard
+
+Everything I've described above is technically straightforward to implement. The hard part is cultural.
+
+Developers have status from writing code. In AI-native teams, the high-leverage work is writing specifications — describing systems precisely enough that AI can implement them correctly. That's a different skill, it produces different artifacts, and it's not yet recognized as the high-status work it actually is.
+
+The engineers I've seen transition well are the ones who already understood that design — the thinking before the typing — was where the real work was. AI just makes the gap between good design and bad design more visible, faster.
+
+The ones who struggle are the ones whose craft identity is tied to writing code. They're right that writing code is a skill. But the question is whether writing code is the bottleneck — and in 2026, for most features, it isn't.
+
+The bottleneck is specification quality. That's where the methodology needs to focus.
