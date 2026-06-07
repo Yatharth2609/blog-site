@@ -4,8 +4,8 @@
  * Run after publishing a new blog post:
  *   npm run notify
  *
- * Reads the latest post from content/posts, sends a styled email
- * to every address in data/subscribers.json via Resend.
+ * Fetches active subscribers from Resend Audience, sends a styled email
+ * to each one via Resend.
  */
 
 import { config } from 'dotenv'
@@ -21,7 +21,6 @@ config({ path: join(process.cwd(), '.env.local') })
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
 
 import { Resend } from 'resend'
-import { readFileSync, existsSync } from 'fs'
 import { getAllPosts, type Post } from '../lib/posts'
 
 // ─── Thin Resend wrapper using Node built-in fetch ────────────────────────────
@@ -38,14 +37,19 @@ async function sendEmail(apiKey: string, payload: {
   return { id: data.id }
 }
 
-// ─── Load subscribers ─────────────────────────────────────────────────────────
+// ─── Load subscribers from Resend Audience ──────────────────────────────────
 
-const SUBSCRIBERS_FILE = join(process.cwd(), 'data', 'subscribers.json')
-
-function loadSubscribers(): string[] {
-  if (!existsSync(SUBSCRIBERS_FILE)) return []
-  try { return JSON.parse(readFileSync(SUBSCRIBERS_FILE, 'utf-8')) }
-  catch { return [] }
+async function fetchSubscribers(apiKey: string, audienceId: string): Promise<string[]> {
+  const res = await fetch(
+    `https://api.resend.com/audiences/${audienceId}/contacts`,
+    { headers: { Authorization: `Bearer ${apiKey}` } }
+  )
+  if (!res.ok) {
+    console.error('Failed to fetch subscribers from Resend:', res.statusText)
+    return []
+  }
+  const { data } = await res.json() as { data?: { email: string; unsubscribed: boolean }[] }
+  return (data ?? []).filter(c => !c.unsubscribed).map(c => c.email)
 }
 
 function getLatestPost(): Post | null {
@@ -114,13 +118,19 @@ async function main() {
     process.exit(1)
   }
 
+  const audienceId = process.env.RESEND_AUDIENCE_ID
+  if (!audienceId) {
+    console.error('❌  RESEND_AUDIENCE_ID is not set in .env.local')
+    process.exit(1)
+  }
+
   const post = getLatestPost()
   if (!post) {
     console.error('❌  No posts found in content/posts/')
     process.exit(1)
   }
 
-  const subscribers = loadSubscribers()
+  const subscribers = await fetchSubscribers(apiKey, audienceId)
   if (subscribers.length === 0) {
     console.log('ℹ️  No subscribers yet — nothing to send.')
     return

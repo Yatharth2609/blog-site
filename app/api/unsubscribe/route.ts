@@ -2,20 +2,15 @@
  * app/api/unsubscribe/route.ts
  *
  * GET /api/unsubscribe?email=...
- * → Removes email from data/subscribers.json
+ * → Marks contact as unsubscribed in Resend Audience
+ *
+ * No filesystem writes — safe on Vercel's read-only runtime.
+ * Requires env vars: RESEND_API_KEY, RESEND_AUDIENCE_ID
  */
 
 import { NextRequest, NextResponse } from 'next/server'
-import { readFileSync, writeFileSync, existsSync } from 'fs'
-import { join } from 'path'
 
-const SUBSCRIBERS_FILE = join(process.cwd(), 'data', 'subscribers.json')
-
-function loadSubscribers(): string[] {
-  if (!existsSync(SUBSCRIBERS_FILE)) return []
-  try { return JSON.parse(readFileSync(SUBSCRIBERS_FILE, 'utf-8')) }
-  catch { return [] }
-}
+const RESEND_BASE = 'https://api.resend.com'
 
 export async function GET(req: NextRequest) {
   const email = req.nextUrl.searchParams.get('email')?.trim().toLowerCase()
@@ -23,9 +18,36 @@ export async function GET(req: NextRequest) {
     return new NextResponse('Missing email', { status: 400 })
   }
 
-  const list = loadSubscribers()
-  const updated = list.filter(e => e !== email)
-  writeFileSync(SUBSCRIBERS_FILE, JSON.stringify(updated, null, 2), 'utf-8')
+  const apiKey     = process.env.RESEND_API_KEY
+  const audienceId = process.env.RESEND_AUDIENCE_ID
+
+  if (!apiKey || !audienceId) {
+    return new NextResponse('Server misconfiguration', { status: 500 })
+  }
+
+  // First find the contact ID by email, then mark as unsubscribed.
+  // Resend Contacts API: GET /audiences/{id}/contacts?email=...
+  const listRes = await fetch(
+    `${RESEND_BASE}/audiences/${audienceId}/contacts`,
+    { headers: { Authorization: `Bearer ${apiKey}` } }
+  )
+
+  if (listRes.ok) {
+    const { data } = await listRes.json() as { data?: { id: string; email: string }[] }
+    const contact = data?.find(c => c.email === email)
+
+    if (contact) {
+      // PATCH to mark unsubscribed rather than deleting — keeps the record
+      await fetch(`${RESEND_BASE}/audiences/${audienceId}/contacts/${contact.id}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ unsubscribed: true }),
+      })
+    }
+  }
 
   return new NextResponse(`
     <!DOCTYPE html><html><head><meta charset="utf-8"/></head>

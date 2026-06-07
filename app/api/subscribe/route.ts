@@ -2,42 +2,29 @@
  * app/api/subscribe/route.ts
  *
  * POST /api/subscribe   { email: string }
- * → Adds email to data/subscribers.json (deduped)
+ * → Adds contact to Resend Audience (deduped by Resend)
  * → Sends a welcome email via Resend
+ *
+ * No filesystem writes — safe on Vercel's read-only runtime.
+ * Requires env vars: RESEND_API_KEY, RESEND_AUDIENCE_ID
  */
 
 import { NextRequest, NextResponse } from 'next/server'
-import { readFileSync, writeFileSync, existsSync } from 'fs'
-import { join } from 'path'
 
-const SUBSCRIBERS_FILE = join(process.cwd(), 'data', 'subscribers.json')
+const RESEND_BASE = 'https://api.resend.com'
 
-function loadSubscribers(): string[] {
-  if (!existsSync(SUBSCRIBERS_FILE)) return []
-  try { return JSON.parse(readFileSync(SUBSCRIBERS_FILE, 'utf-8')) }
-  catch { return [] }
-}
-
-function saveSubscribers(list: string[]) {
-  writeFileSync(SUBSCRIBERS_FILE, JSON.stringify(list, null, 2), 'utf-8')
-}
-
-// Direct fetch to Resend API — the SDK (undici) fails under corporate SSL inspection proxies.
-async function sendWelcomeEmail(apiKey: string, to: string) {
-  const res = await fetch('https://api.resend.com/emails', {
-    method:  'POST',
-    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      from:    'Yatharth Mishra <newsletter@yatharthmishra.dev>',
-      to:      [to],
-      subject: "You're subscribed — Yatharth Mishra's blog",
-      html:    welcomeEmail(to),
-    }),
+async function resend<T>(apiKey: string, path: string, options: RequestInit = {}): Promise<{ data?: T; error?: string }> {
+  const res = await fetch(`${RESEND_BASE}${path}`, {
+    ...options,
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
   })
-  if (!res.ok) {
-    const err = await res.json() as { message?: string }
-    throw new Error(`Resend error: ${err.message ?? res.statusText}`)
-  }
+  const json = await res.json() as Record<string, unknown>
+  if (!res.ok) return { error: (json.message as string) ?? res.statusText }
+  return { data: json as T }
 }
 
 export async function POST(req: NextRequest) {
@@ -49,24 +36,41 @@ export async function POST(req: NextRequest) {
     }
 
     const normalised = email.trim().toLowerCase()
+    const apiKey     = process.env.RESEND_API_KEY
+    const audienceId = process.env.RESEND_AUDIENCE_ID
 
-    // ── Persist ────────────────────────────────────────────────────────────────
-    const list = loadSubscribers()
-    if (list.includes(normalised)) {
+    if (!apiKey || !audienceId) {
+      console.error('[/api/subscribe] Missing RESEND_API_KEY or RESEND_AUDIENCE_ID')
+      return NextResponse.json({ error: 'Server misconfiguration.' }, { status: 500 })
+    }
+
+    // ── Add to Resend Audience ──────────────────────────────────────────────────
+    // Resend deduplicates contacts by email within an audience automatically.
+    const { error: contactError } = await resend(apiKey, `/audiences/${audienceId}/contacts`, {
+      method: 'POST',
+      body: JSON.stringify({ email: normalised, unsubscribed: false }),
+    })
+
+    if (contactError) {
+      // "Contact already exists" is not a real error — Resend returns 409 for dupes
+      if (!contactError.toLowerCase().includes('already exists')) {
+        console.error('[/api/subscribe] Resend contact error:', contactError)
+        return NextResponse.json({ error: 'Failed to subscribe. Try again.' }, { status: 500 })
+      }
       return NextResponse.json({ message: 'Already subscribed!' })
     }
-    list.push(normalised)
-    saveSubscribers(list)
 
     // ── Welcome email ──────────────────────────────────────────────────────────
-    const resendKey = process.env.RESEND_API_KEY
-    if (resendKey) {
-      // Don't await — fire and forget so the subscribe response is instant.
-      // Errors are logged but don't fail the subscription.
-      sendWelcomeEmail(resendKey, normalised).catch(err =>
-        console.error('[/api/subscribe] welcome email failed:', err)
-      )
-    }
+    // Fire-and-forget — don't block the subscribe response on email delivery.
+    resend(apiKey, '/emails', {
+      method: 'POST',
+      body: JSON.stringify({
+        from:    'Yatharth Mishra <newsletter@yatharthmishra.dev>',
+        to:      [normalised],
+        subject: "You're subscribed — Yatharth Mishra's blog",
+        html:    welcomeEmail(normalised),
+      }),
+    }).catch(err => console.error('[/api/subscribe] welcome email failed:', err))
 
     return NextResponse.json({ message: 'Subscribed!' })
   } catch (err) {
